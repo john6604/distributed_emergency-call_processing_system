@@ -1,131 +1,204 @@
-# dispatcher.py
+# dispatcher_advanced.py
+
 import asyncio
 import aiohttp
 import json
 from pathlib import Path
-from typing import List
-import math
-import sys
+from typing import List, Dict
+import time
 
-# CONFIG --------------------------------------------------------------
-JSONL_PATH = "../dataset/conversaciones.jsonl"  
+# ================================================================
+# CONFIG
+# ================================================================
+
+JSONL_PATH = "../dataset/conversaciones1.jsonl"
 OUTPUT_JSON = "resultados.json"
-SERVERS = [
-    "http://IP_MAQUINA_1:8000/keywords", 
-    "http://IP_MAQUINA_2:8000/keywords",
-]
-API_KEY = None  # si usas autenticación, pon el valor aquí (X-API-KEY)
-BATCH_SIZE = 8          # cuántos items por petición al servidor
-CONCURRENT_REQUESTS = 4 # solicitudes HTTP paralelas desde el dispatcher
-REQUEST_TIMEOUT = 60    # segundos
-RETRIES = 3
-# --------------------------------------------------------------------
+PROGRESS_FILE = "progress.json"
 
-def load_jsonl(path: str):
+SERVERS = [
+    "http://25.50.175.180:8000/keywords",
+    "http://25.50.208.243:8000/keywords",
+]
+
+API_KEY = "***REMOVED***"
+
+BATCH_SIZE = 8
+CONCURRENT_REQUESTS = 4
+BASE_RETRY_DELAY = 2   # segundos
+MAX_RETRY_DELAY = 60   # segundos
+
+# ================================================================
+# UTILIDADES
+# ================================================================
+
+def load_jsonl(path: str) -> List[dict]:
     items = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             if not line.strip(): continue
-            obj = json.loads(line)
-            items.append(obj)
+            items.append(json.loads(line))
     return items
 
-def split_shards_round_robin(items: List[dict], n_shards: int):
-    shards = [[] for _ in range(n_shards)]
-    for i, it in enumerate(items):
-        shards[i % n_shards].append(it)
-    return shards
 
-async def post_batch(session, url, batch):
+def load_progress() -> Dict:
+    if not Path(PROGRESS_FILE).exists():
+        return {"processed_ids": []}
+
+    with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_progress(progress: Dict):
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(progress, f, indent=2)
+
+
+async def health_check(session, server):
+    try:
+        async with session.get(server.replace("/keywords", "/health"), timeout=5) as r:
+            return r.status == 200
+    except:
+        return False
+
+
+# ================================================================
+# ENVÍO DE LOTES
+# ================================================================
+
+async def post_batch(session, server, batch):
+    """Envía un batch con reintentos infinitos, nunca se pierde un batch."""
+    
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["X-API-KEY"] = API_KEY
-    payload = {"items": [{"id": it["id"], "text": it["text"], "top_k": it.get("top_k", 6)} for it in batch]}
-    for attempt in range(1, RETRIES+1):
-        try:
-            async with session.post(url, json=payload, timeout=REQUEST_TIMEOUT, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data
-                else:
-                    text = await resp.text()
-                    print(f"[WARN] server {url} status {resp.status}: {text}")
-        except Exception as e:
-            print(f"[ERROR] post to {url} attempt {attempt} failed: {e}")
-        await asyncio.sleep(1 + attempt*2)
-    raise RuntimeError(f"Failed to post to {url} after {RETRIES} retries")
 
-async def process_shard(shard, server_url, session, sem):
-    results = []
-    # send batches
-    for i in range(0, len(shard), BATCH_SIZE):
-        batch = shard[i:i+BATCH_SIZE]
-        # concurrency control for HTTP
-        await sem.acquire()
+    payload = {
+        "items": [
+            {"id": it["id"], "text": it["text"], "top_k": it.get("top_k", 6)}
+            for it in batch
+        ]
+    }
+
+    delay = BASE_RETRY_DELAY
+
+    while True:
         try:
-            data = await post_batch(session, server_url, batch)
-            # data expected {"results": [{"id":..., "keywords":[...]} , ...]}
-            if "results" in data:
-                for r in data["results"]:
-                    results.append(r)
-            else:
-                # fallback: if server returns list
-                if isinstance(data, list):
-                    results.extend(data)
+            async with session.post(server, json=payload, timeout=60, headers=headers) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+
+                else:
+                    msg = await resp.text()
+                    print(f"[WARN] Server {server} → {resp.status}: {msg}")
+
         except Exception as e:
-            # fallback: reassign to other server if exists
-            print(f"[ERROR] batch failed on {server_url}: {e}")
-            # Try to send to other servers sequentially
-            for alt in SERVERS:
-                if alt == server_url:
-                    continue
-                try:
-                    data = await post_batch(session, alt, batch)
-                    if "results" in data:
-                        results.extend(data["results"])
-                    else:
-                        if isinstance(data, list):
-                            results.extend(data)
-                    print(f"[INFO] batch reassigned to {alt}")
-                    break
-                except Exception as e2:
-                    print(f"[WARN] alternate {alt} failed: {e2}")
-        finally:
-            sem.release()
-    return results
+            print(f"[ERROR] Error contacting {server}: {e}")
+
+        print(f"[RETRY] Waiting {delay}s before retry...")
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, MAX_RETRY_DELAY)
+
+
+# ================================================================
+# WORKER PRINCIPAL
+# ================================================================
+
+async def worker(queue, session, available_servers, progress, results_map):
+    """Toma batches de la cola y los envía al primer servidor disponible."""
+    
+    while True:
+        batch = await queue.get()
+        if batch is None:
+            queue.task_done()
+            return
+
+        # escoger servidor disponible
+        server = available_servers[int(time.time() * 1000) % len(available_servers)]
+
+        data = await post_batch(session, server, batch)
+
+        # Guardar resultados evitando duplicados
+        if "results" in data:
+            for r in data["results"]:
+                rid = r["id"]
+                if rid not in results_map:
+                    results_map[rid] = r
+                    progress["processed_ids"].append(rid)
+
+        save_progress(progress)
+
+        queue.task_done()
+
+
+# ================================================================
+# MAIN
+# ================================================================
 
 async def main():
+    print("📌 Cargando dataset…")
     items = load_jsonl(JSONL_PATH)
-    if not items:
-        print("No items found.")
+    progress = load_progress()
+
+    processed = set(progress["processed_ids"])
+    items_to_process = [it for it in items if it["id"] not in processed]
+
+    print(f"Total: {len(items)} | Pendientes: {len(items_to_process)}")
+
+    if not items_to_process:
+        print("Todo ya está procesado. Saliendo.")
         return
-    print(f"Loaded {len(items)} conversations.")
 
-    # repartir en shards por servidor con round-robin para balance fino
-    shards = split_shards_round_robin(items, len(SERVERS))
-
+    # session global
     connector = aiohttp.TCPConnector(limit=0)
     timeout = aiohttp.ClientTimeout(total=None)
-    sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        tasks = []
-        for shard, server in zip(shards, SERVERS):
-            tasks.append(asyncio.create_task(process_shard(shard, server, session, sem)))
-        # esperar y recolectar
-        all_results = []
-        lists = await asyncio.gather(*tasks)
-        for l in lists:
-            all_results.extend(l)
 
-    # ordenar por id (opcional)
-    all_results_sorted = sorted(all_results, key=lambda x: str(x.get("id")))
+        # health check
+        print("🔍 Verificando servidores...")
+        alive = []
+        for s in SERVERS:
+            ok = await health_check(session, s)
+            if ok:
+                alive.append(s)
+                print(f"  ✔ {s} OK")
+            else:
+                print(f"  ✖ {s} CAÍDO")
 
-    # Guardar en JSON final
+        if not alive:
+            print("❌ Ningún servidor está disponible. No se puede continuar.")
+            return
+
+        # generar batches
+        queue = asyncio.Queue()
+        for i in range(0, len(items_to_process), BATCH_SIZE):
+            queue.put_nowait(items_to_process[i:i+BATCH_SIZE])
+
+        # mapa de resultados sin duplicados
+        results_map = {}
+
+        # lanzar workers
+        workers = [
+            asyncio.create_task(worker(queue, session, alive, progress, results_map))
+            for _ in range(CONCURRENT_REQUESTS)
+        ]
+
+        await queue.join()
+
+        # terminar workers
+        for _ in workers:
+            queue.put_nowait(None)
+
+        await asyncio.gather(*workers)
+
+    # exportar resultados
+    final_results = sorted(results_map.values(), key=lambda x: str(x["id"]))
+
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(all_results_sorted, f, ensure_ascii=False, indent=2)
+        json.dump(final_results, f, indent=2, ensure_ascii=False)
 
-    print(f"Guardado {len(all_results_sorted)} resultados en {OUTPUT_JSON}")
+    print(f"✅ Guardado {len(final_results)} resultados en {OUTPUT_JSON}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
