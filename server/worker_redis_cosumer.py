@@ -6,104 +6,188 @@ import time
 from redis import asyncio as aioredis
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
+from redis.exceptions import ResponseError
 
+# ============================
 # CONFIG
-REDIS_URL = os.getenv("REDIS_URL", "redis://192.168.3.30:6379")
+# ============================
+REDIS_URL = os.getenv("REDIS_URL", "redis://25.50.208.243:6379")
 STREAM = "stream:convs"
-GROUP = "group:convs"
+GROUP = "group2:convs"
 CONSUMER = f"worker-{os.getenv('HOSTNAME','local')}-{os.getpid()}"
-BATCH = 4                 # cuántos mensajes leer por XREADGROUP
-CLAIM_MILLIS = 30000      # reclamar mensajes inactivos de > 30s
-RECLAIM_INTERVAL = 20     # cada cuántos seg ejecuta reclaim
+BATCH = 4
+CLAIM_MILLIS = 30000       # reclamo mensajes inactivos > 30s
+RECLAIM_INTERVAL = 20      # cada cuántos segundos reclamamos
 SLEEP_EMPTY = 1.0
 
-# Modelo
+# ============================
+# MODELO
+# ============================
 MODEL_NAME = "UDA-LIDI/barto_emergency_multi_purpose"
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_auth_token=True)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, use_auth_token=True).to(device)
 model.eval()
 
+
+# ============================
+# GROUP CREATION
+# ============================
 async def ensure_group(r):
     try:
-        # crea el grupo si no existe; "$" para no leer historic por defecto, "0" lee todo
-        await r.xgroup_create(STREAM, GROUP, id="$", mkstream=True)
-        print("Grupo creado:", GROUP)
-    except aioredis.exceptions.ResponseError as e:
-        # si ya existe lanza error; ignorar
+        # IMPORTANTE: iniciar desde "0" para procesar todos los mensajes nuevos
+        await r.xgroup_create(STREAM, GROUP, id="0", mkstream=True)
+        print(f"Grupo de consumo '{GROUP}' creado")
+    except ResponseError as e:
         if "BUSYGROUP" in str(e):
-            print("Grupo ya existe.")
+            print(f"Ya existe el grupo de consumo '{GROUP}' — OK")
         else:
             raise
 
+
+# ============================
+# PROCESAMIENTO DEL MENSAJE
+# ============================
 async def process_message(rid, fields):
     conv_id = fields.get("id")
     text = fields.get("text", "")
-    # aquí tu prompt / generación (truncation)
+
+    # FIX: si viene como bytes, decodificar
+    if isinstance(text, bytes):
+        text = text.decode()
+
     prompt = "Extrae las palabras clave de la emergencia: " + text
+
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
     out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
     decoded = tokenizer.decode(out[0], skip_special_tokens=True)
-    # normalizar lista (si separa por comas)
+
+    # Parseo simple en lista
     if "," in decoded:
         kws = [k.strip() for k in decoded.split(",") if k.strip()]
     else:
         kws = [k.strip() for k in decoded.split() if k.strip()]
+
     return {"id": conv_id, "keywords": kws}
 
+
+# ============================
+# LOOP PRINCIPAL
+# ============================
 async def consumer_loop():
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     await ensure_group(r)
 
+    # ------- TAREA: Reclamar mensajes abandonados -------
     async def reclaim_pending():
-        # usa XAUTOCLAIM (Redis 6.2+) para reclamar mensajes > CLAIM_MILLIS
         try:
-            # XAUTOCLAIM stream group consumer min-idle-time start [COUNT]
-            # redis-py exposes xauto_claim
-            # Si no disponible, puedes usar XPENDING + XCLAIM
             while True:
-                # auto-claim returns (next_id, [{id:{fields}}...])
-                res = await r.xautoclaim(STREAM, GROUP, CONSUMER, min_idle_time=CLAIM_MILLIS, start_id="0-0", count=100)
-                # res is (next_id, messages)
-                if res and len(res) >= 2:
-                    msgs = res[1]
-                    if msgs:
-                        print(f"[{CONSUMER}] reclaimed {len(msgs)} messages")
+                res = await r.xautoclaim(
+                    STREAM,
+                    GROUP,
+                    CONSUMER,
+                    min_idle_time=CLAIM_MILLIS,
+                    start_id="0-0",
+                    count=100
+                )
+
+                # Redis retorna: (next_id, messages, deleted_msgids)
+                next_id, messages, deleted_ids = res
+
+                if messages:
+                    print(f"[{CONSUMER}] reclaimed {len(messages)} messages")
+
                 await asyncio.sleep(RECLAIM_INTERVAL)
+
         except Exception as e:
             print("Reclaim error:", e)
 
+
+
+    # ------- TAREA: Leer y procesar mensajes -------
     async def read_and_process():
         while True:
             try:
-                # XREADGROUP GROUP <group> <consumer> COUNT <BATCH> BLOCK 5000 STREAMS <stream> '>'
-                resp = await r.xreadgroup(GROUP, CONSUMER, {STREAM: ">"}, count=BATCH, block=5000)
+                # --- Procesar mensajes recuperados (reclaimed) antes de los nuevos ---
+                pending = await r.xpending_range(
+                    STREAM, GROUP,
+                    min="-", max="+",
+                    count=BATCH
+                )
+
+                if pending:
+                    for p in pending:
+                        msg_id = p['message_id']
+                        # Obtener el mensaje real
+                        msg = await r.xclaim(
+                            STREAM, GROUP, CONSUMER,
+                            min_idle_time=CLAIM_MILLIS,
+                            message_ids=[msg_id]
+                        )
+                        if msg:
+                            msg_id, fields = msg[0]
+
+                            try:
+                                result = await process_message(msg_id, fields)
+                                await r.xadd("stream:results", {
+                                    "id": result["id"],
+                                    "keywords": json.dumps(result["keywords"])
+                                })
+                                await r.xack(STREAM, GROUP, msg_id)
+                                print(f"[{CONSUMER}] processed PENDING {result['id']} acked {msg_id}")
+                            except Exception as e:
+                                print(f"Error processing reclaimed {msg_id}:", e)
+
+                    # después de procesar pendientes, continuar el loop sin romper tu lógica
+                    continue
+
+                resp = await r.xreadgroup(
+                    GROUP, CONSUMER,
+                    {STREAM: ">"},
+                    count=BATCH,
+                    block=5000
+                )
+
                 if not resp:
                     await asyncio.sleep(SLEEP_EMPTY)
                     continue
-                # resp is list of (stream, [(id, {field:val})...])
+
                 for stream_name, messages in resp:
                     for msg_id, fields in messages:
                         try:
                             result = await process_message(msg_id, fields)
-                            # 1) guardar resultado en Redis hash o en un output stream/file
-                            # Aquí, por simplicidad, guarda en un stream de salida
-                            await r.xadd("stream:results", {"id": result["id"], "keywords": json.dumps(result["keywords"])})
-                            # 2) ACK el message
+                            await r.xadd("stream:results", {
+                                "id": result["id"],
+                                "keywords": json.dumps(result["keywords"])
+                            })
                             await r.xack(STREAM, GROUP, msg_id)
                             print(f"[{CONSUMER}] processed {result['id']} acked {msg_id}")
                         except Exception as e:
-                            print(f"Error processing {msg_id}: {e}")
-                            # NO ACK si falla: se quedará en PEL y otro consumer podrá reclamar
+                            print(f"Error processing {msg_id}:", e)
+
+            except ResponseError as e:
+                # 🔥 FIX: si el grupo no existe → lo recreamos y seguimos
+                if "NOGROUP" in str(e):
+                    print("No existe un grupo de consumidores, recreándolo.")
+                    try:
+                        await r.xgroup_create(STREAM, GROUP, id="0-0", mkstream=True)
+                        print("Grupo recreado.")
+                    except ResponseError as e2:
+                        if "BUSYGROUP" in str(e2):
+                            pass  # ya fue creado por otro worker
+                    continue
+
             except Exception as e:
                 print("Read loop error:", e)
                 await asyncio.sleep(1)
 
-    # lanzar tareas
-    t_reclaim = asyncio.create_task(reclaim_pending())
-    t_read = asyncio.create_task(read_and_process())
 
-    await asyncio.gather(t_read, t_reclaim)
+    t1 = asyncio.create_task(reclaim_pending())
+    t2 = asyncio.create_task(read_and_process())
+
+    await asyncio.gather(t1, t2)
+
 
 if __name__ == "__main__":
     asyncio.run(consumer_loop())
