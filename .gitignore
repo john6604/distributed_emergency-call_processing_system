@@ -45,6 +45,9 @@ htmlcov/
 logs/
 
 # Generated project outputs
+progress.json
+server/progress.json
+Microservicios/progress.json
 server/resultados*.json
 server/resultados*.jsonl
 Microservicios/resultados*.json

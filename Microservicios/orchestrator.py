@@ -7,6 +7,13 @@ import json
 import time
 import os
 
+try:
+    from config import load_env
+except ImportError:
+    from .config import load_env
+
+load_env()
+
 DB_PATH = os.getenv("TASKS_DB", "tasks.db")
 app = FastAPI(title="Orchestrator")
 

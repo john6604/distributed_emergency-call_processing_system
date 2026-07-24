@@ -5,14 +5,24 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from typing import List, Optional
 import torch
 import asyncio
+import os
 
-MODEL_NAME = "UDA-LIDI/barto_emergency_multi_purpose"
-API_KEY = "***REMOVED***"
+try:
+    from config import load_env
+except ImportError:
+    from .config import load_env
+
+load_env()
+
+MODEL_NAME = os.getenv("MODEL_NAME", "UDA-LIDI/barto_emergency_multi_purpose")
+API_KEY = os.getenv("KEYWORDS_API_KEY") or os.getenv("API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+MODEL_AUTH = {"use_auth_token": HF_TOKEN} if HF_TOKEN else {}
 
 # Cargar modelo una vez al inicio (tiempo de carga)
 device = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_auth_token=True)  # si repo privado
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, use_auth_token=True).to(device)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)  # si repo privado
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(device)
 model.eval()
 
 app = FastAPI(title="KeywordInference", version="1.0")

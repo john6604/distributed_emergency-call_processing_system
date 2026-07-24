@@ -7,23 +7,32 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 import time
 
-REDIS_URL = "redis://192.168.3.30:6379"
-WORKERS_SET = "workers:active"
-WORKERS_TIMEOUT = 30          # segundos antes de considerar muerto
-STREAM_PREFIX = "stream:convs"
+try:
+    from config import env_int, require_env
+except ImportError:
+    from .config import env_int, require_env
 
-MODEL_NAME = "UDA-LIDI/barto_emergency_multi_purpose"
+REDIS_URL = os.getenv("DYNAMIC_REDIS_URL") or require_env("REDIS_URL")
+WORKERS_SET = os.getenv("WORKERS_SET", "workers:active")
+WORKERS_TIMEOUT = env_int("WORKERS_TIMEOUT", 30)          # segundos antes de considerar muerto
+WORKER_HEARTBEAT_SECONDS = env_int("WORKER_HEARTBEAT_SECONDS", 5)
+STREAM_PREFIX = os.getenv("STREAM_PREFIX", "stream:convs")
+STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
+
+MODEL_NAME = os.getenv("MODEL_NAME", "UDA-LIDI/barto_emergency_multi_purpose")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+MODEL_AUTH = {"use_auth_token": HF_TOKEN} if HF_TOKEN else {}
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_auth_token=True)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, use_auth_token=True).to(device)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(device)
 model.eval()
 
 
 async def heartbeat(r, worker_id):
     while True:
         await r.hset(WORKERS_SET, worker_id, int(time.time()))
-        await asyncio.sleep(5)  # cada 5s actualiza heartbeat
+        await asyncio.sleep(WORKER_HEARTBEAT_SECONDS)
 
 
 async def main():
@@ -67,7 +76,7 @@ async def main():
                 else:
                     kws = decoded.split()
 
-                await r.xadd("stream:results", {
+                await r.xadd(STREAM_OUT, {
                     "id": conv_id,
                     "keywords": json.dumps(kws)
                 })

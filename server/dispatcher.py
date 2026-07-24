@@ -3,29 +3,34 @@
 import asyncio
 import aiohttp
 import json
+import os
 from pathlib import Path
 from typing import List, Dict
 import time
+
+try:
+    from config import env_int, env_list
+except ImportError:
+    from .config import env_int, env_list
 
 # ================================================================
 # CONFIG
 # ================================================================
 
-JSONL_PATH = "../dataset/conversaciones1.jsonl"
-OUTPUT_JSON = "resultados.json"
-PROGRESS_FILE = "progress.json"
+JSONL_PATH = os.getenv("JSONL_PATH", "../dataset/conversaciones1.jsonl")
+OUTPUT_JSON = os.getenv("OUTPUT_JSON", "resultados.json")
+PROGRESS_FILE = os.getenv("PROGRESS_FILE", "progress.json")
 
-SERVERS = [
-    "http://25.50.175.180:8000/keywords",
-    "http://25.50.208.243:8000/keywords",
-]
+SERVERS = env_list("KEYWORD_SERVER_URLS")
+if not SERVERS:
+    raise RuntimeError("Falta configurar KEYWORD_SERVER_URLS en el entorno o en .env")
 
-API_KEY = "***REMOVED***"
+API_KEY = os.getenv("KEYWORDS_API_KEY") or os.getenv("API_KEY")
 
-BATCH_SIZE = 8
-CONCURRENT_REQUESTS = 4
-BASE_RETRY_DELAY = 2   # segundos
-MAX_RETRY_DELAY = 60   # segundos
+BATCH_SIZE = env_int("BATCH_SIZE", 8)
+CONCURRENT_REQUESTS = env_int("CONCURRENT_REQUESTS", 4)
+BASE_RETRY_DELAY = env_int("BASE_RETRY_DELAY", 2)   # segundos
+MAX_RETRY_DELAY = env_int("MAX_RETRY_DELAY", 60)   # segundos
 
 # ================================================================
 # UTILIDADES

@@ -1,14 +1,20 @@
 # dispatcher_to_redis.py
 import json
+import os
 from redis import asyncio as aioredis
 
-REDIS_URL = "redis://25.50.175.180:6379"
+try:
+    from config import require_env
+except ImportError:
+    from .config import require_env
 
-STREAM_IN = "stream:convs"
-STREAM_OUT = "stream:results"
-GROUP = "group2:convs"
+REDIS_URL = os.getenv("DISPATCHER_REDIS_URL") or require_env("REDIS_URL")
 
-JSONL_PATH = "../dataset/conversaciones1.jsonl"
+STREAM_IN = os.getenv("STREAM_IN", "stream:convs")
+STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
+GROUP = os.getenv("CONSUMER_GROUP", "group2:convs")
+
+JSONL_PATH = os.getenv("JSONL_PATH", "../dataset/conversaciones1.jsonl")
 
 
 async def cleanup_redis(r):

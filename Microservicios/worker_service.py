@@ -6,16 +6,23 @@ import json
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 
-ORCH_URL = os.getenv("ORCH_URL", "http://25.50.208.243:8000")
-WORKER_ID = os.getenv("WORKER_ID", f"worker-{os.getpid()}")
-SLEEP_NO_TASK = 1.0
+try:
+    from config import env_float, require_env
+except ImportError:
+    from .config import env_float, require_env
 
-MODEL_NAME = "UDA-LIDI/barto_emergency_multi_purpose"
+ORCH_URL = os.getenv("WORKER_ORCH_URL") or require_env("ORCH_URL")
+WORKER_ID = os.getenv("WORKER_ID", f"worker-{os.getpid()}")
+SLEEP_NO_TASK = env_float("SLEEP_NO_TASK", 1.0)
+
+MODEL_NAME = os.getenv("MODEL_NAME", "UDA-LIDI/barto_emergency_multi_purpose")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+MODEL_AUTH = {"use_auth_token": HF_TOKEN} if HF_TOKEN else {}
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 print("Cargando modelo.")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_auth_token=True)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, use_auth_token=True).to(device)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(device)
 model.eval()
 print("Modelo cargado, ID:", WORKER_ID)
 

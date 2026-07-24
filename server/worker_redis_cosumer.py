@@ -8,26 +8,34 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 from redis.exceptions import ResponseError
 
+try:
+    from config import env_float, env_int, require_env
+except ImportError:
+    from .config import env_float, env_int, require_env
+
 # ============================
 # CONFIG
 # ============================
-REDIS_URL = os.getenv("REDIS_URL", "redis://25.50.208.243:6379")
-STREAM = "stream:convs"
-GROUP = "group2:convs"
+REDIS_URL = os.getenv("WORKER_REDIS_URL") or require_env("REDIS_URL")
+STREAM = os.getenv("STREAM_IN", "stream:convs")
+STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
+GROUP = os.getenv("CONSUMER_GROUP", "group2:convs")
 CONSUMER = f"worker-{os.getenv('HOSTNAME','local')}-{os.getpid()}"
-BATCH = 4
-CLAIM_MILLIS = 30000       # reclamo mensajes inactivos > 30s
-RECLAIM_INTERVAL = 20      # cada cuántos segundos reclamamos
-SLEEP_EMPTY = 1.0
+BATCH = env_int("CONSUMER_BATCH", 4)
+CLAIM_MILLIS = env_int("CLAIM_MILLIS", 30000)       # reclamo mensajes inactivos > 30s
+RECLAIM_INTERVAL = env_int("RECLAIM_INTERVAL", 20)      # cada cuántos segundos reclamamos
+SLEEP_EMPTY = env_float("SLEEP_EMPTY", 1.0)
 
 # ============================
 # MODELO
 # ============================
-MODEL_NAME = "UDA-LIDI/barto_emergency_multi_purpose"
+MODEL_NAME = os.getenv("MODEL_NAME", "UDA-LIDI/barto_emergency_multi_purpose")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+MODEL_AUTH = {"use_auth_token": HF_TOKEN} if HF_TOKEN else {}
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_auth_token=True)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, use_auth_token=True).to(device)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(device)
 model.eval()
 
 
@@ -130,7 +138,7 @@ async def consumer_loop():
 
                             try:
                                 result = await process_message(msg_id, fields)
-                                await r.xadd("stream:results", {
+                                await r.xadd(STREAM_OUT, {
                                     "id": result["id"],
                                     "keywords": json.dumps(result["keywords"])
                                 })
@@ -157,7 +165,7 @@ async def consumer_loop():
                     for msg_id, fields in messages:
                         try:
                             result = await process_message(msg_id, fields)
-                            await r.xadd("stream:results", {
+                            await r.xadd(STREAM_OUT, {
                                 "id": result["id"],
                                 "keywords": json.dumps(result["keywords"])
                             })

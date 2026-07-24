@@ -1,13 +1,19 @@
 # dispatcher_rr_fault_tolerant.py
 import json
+import os
 from redis import asyncio as aioredis
 import time
 
-REDIS_URL = "redis://192.168.3.30:6379"
-JSONL_PATH = "../dataset/conversaciones1.jsonl"
-STREAM_PREFIX = "stream:convs"
-WORKERS_SET = "workers:active"
-WORKERS_TIMEOUT = 30    # considerar inactivos si no hay heartbeat
+try:
+    from config import env_int, require_env
+except ImportError:
+    from .config import env_int, require_env
+
+REDIS_URL = os.getenv("DYNAMIC_REDIS_URL") or require_env("REDIS_URL")
+JSONL_PATH = os.getenv("JSONL_PATH", "../dataset/conversaciones1.jsonl")
+STREAM_PREFIX = os.getenv("STREAM_PREFIX", "stream:convs")
+WORKERS_SET = os.getenv("WORKERS_SET", "workers:active")
+WORKERS_TIMEOUT = env_int("WORKERS_TIMEOUT", 30)    # considerar inactivos si no hay heartbeat
 
 async def main():
     r = aioredis.from_url(REDIS_URL, decode_responses=True)

@@ -1,8 +1,15 @@
 import json
+import os
 from redis import asyncio as aioredis
 
-REDIS_URL = "redis://192.168.3.30:6379"
-STREAM_OUT = "stream:results"
+try:
+    from config import require_env
+except ImportError:
+    from .config import require_env
+
+REDIS_URL = os.getenv("COLLECTOR_REDIS_URL") or require_env("REDIS_URL")
+STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
+OUTPUT_JSONL = os.getenv("REDIS_RESULTS_JSONL", "resultados_ordenados.jsonl")
 
 async def main():
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
@@ -28,14 +35,14 @@ async def main():
     print(f"📦 Guardando {len(parsed)} resultados ordenados por ID...")
 
     # 4. Guardar en JSONL
-    with open("resultados_ordenados.jsonl", "w", encoding="utf-8") as f:
+    with open(OUTPUT_JSONL, "w", encoding="utf-8") as f:
         for _, msg_id, fields in parsed:
             # Puedes agregar el redis_id si quieres
             fields["_redis_id"] = msg_id
             f.write(json.dumps(fields, ensure_ascii=False) + "\n")
 
     await r.aclose()
-    print("✅ Archivo generado: resultados_ordenados.jsonl")
+    print(f"✅ Archivo generado: {OUTPUT_JSONL}")
 
 
 if __name__ == "__main__":
