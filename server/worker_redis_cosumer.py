@@ -56,6 +56,23 @@ async def ensure_group(r):
 # ============================
 # PROCESAMIENTO DEL MENSAJE
 # ============================
+def extract_keywords(text):
+    prompt = "Extrae las palabras clave de la emergencia: " + text
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
+    with torch.inference_mode():
+        out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
+    decoded = tokenizer.decode(out[0], skip_special_tokens=True)
+
+    # Parseo simple en lista
+    if "," in decoded:
+        kws = [k.strip() for k in decoded.split(",") if k.strip()]
+    else:
+        kws = [k.strip() for k in decoded.split() if k.strip()]
+
+    return kws
+
+
 async def process_message(rid, fields):
     conv_id = fields.get("id")
     text = fields.get("text", "")
@@ -64,17 +81,7 @@ async def process_message(rid, fields):
     if isinstance(text, bytes):
         text = text.decode()
 
-    prompt = "Extrae las palabras clave de la emergencia: " + text
-
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
-    out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
-    decoded = tokenizer.decode(out[0], skip_special_tokens=True)
-
-    # Parseo simple en lista
-    if "," in decoded:
-        kws = [k.strip() for k in decoded.split(",") if k.strip()]
-    else:
-        kws = [k.strip() for k in decoded.split() if k.strip()]
+    kws = await asyncio.to_thread(extract_keywords, text)
 
     return {"id": conv_id, "keywords": kws}
 

@@ -44,11 +44,12 @@ def check_api_key(x_api_key: Optional[str]):
         return True
     return x_api_key == API_KEY
 
-async def extract_keywords_single(text: str, top_k: int = 6):
+def _extract_keywords_single_sync(text: str, top_k: int = 6):
     prompt = "Extrae las palabras clave de la emergencia: " + text
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
     # generación con beam para mejor calidad (ajusta si quieres latencia menor)
-    out = model.generate(**inputs, num_beams=4, max_new_tokens=64, early_stopping=True)
+    with torch.inference_mode():
+        out = model.generate(**inputs, num_beams=4, max_new_tokens=64, early_stopping=True)
     decoded = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
     # separar por comas si el modelo usa comas, sino por espacios
     # intentamos preferir comas, si no hay comas, fallback a split por espacios
@@ -57,6 +58,10 @@ async def extract_keywords_single(text: str, top_k: int = 6):
     else:
         kws = [k.strip() for k in decoded.split() if k.strip()]
     return kws[:top_k]
+
+
+async def extract_keywords_single(text: str, top_k: int = 6):
+    return await asyncio.to_thread(_extract_keywords_single_sync, text, top_k)
 
 @app.post("/keywords")
 async def keywords_endpoint(req: BatchRequest, x_api_key: Optional[str] = Header(None)):

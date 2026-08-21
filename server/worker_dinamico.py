@@ -58,7 +58,8 @@ async def heartbeat(r):
 def extract_keywords(text):
     prompt = "Extrae las palabras clave de la emergencia: " + text
     inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(device)
-    out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
+    with torch.inference_mode():
+        out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
     decoded = tokenizer.decode(out[0], skip_special_tokens=True)
 
     if "," in decoded:
@@ -75,7 +76,7 @@ async def process_message(r, msg_id, fields, label="NEW"):
         text = text.decode("utf-8")
 
     try:
-        keywords = extract_keywords(text)
+        keywords = await asyncio.to_thread(extract_keywords, text)
         await r.xadd(
             STREAM_OUT,
             {
