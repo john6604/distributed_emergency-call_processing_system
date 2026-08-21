@@ -124,6 +124,8 @@ async def consumer_loop():
                     count=BATCH
                 )
 
+                processed_pending = False
+
                 if pending:
                     for p in pending:
                         msg_id = p['message_id']
@@ -144,11 +146,13 @@ async def consumer_loop():
                                 })
                                 await r.xack(STREAM, GROUP, msg_id)
                                 print(f"[{CONSUMER}] processed PENDING {result['id']} acked {msg_id}")
+                                processed_pending = True
                             except Exception as e:
                                 print(f"Error processing reclaimed {msg_id}:", e)
 
                     # después de procesar pendientes, continuar el loop sin romper tu lógica
-                    continue
+                    if processed_pending:
+                        continue
 
                 resp = await r.xreadgroup(
                     GROUP, CONSUMER,
