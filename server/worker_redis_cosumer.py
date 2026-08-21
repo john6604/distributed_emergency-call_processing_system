@@ -23,7 +23,6 @@ GROUP = os.getenv("CONSUMER_GROUP", "group2:convs")
 CONSUMER = f"worker-{os.getenv('HOSTNAME','local')}-{os.getpid()}"
 BATCH = env_int("CONSUMER_BATCH", 4)
 CLAIM_MILLIS = env_int("CLAIM_MILLIS", 30000)       # reclamo mensajes inactivos > 30s
-RECLAIM_INTERVAL = env_int("RECLAIM_INTERVAL", 20)      # cada cuántos segundos reclamamos
 SLEEP_EMPTY = env_float("SLEEP_EMPTY", 1.0)
 
 # ============================
@@ -86,32 +85,6 @@ async def process_message(rid, fields):
 async def consumer_loop():
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     await ensure_group(r)
-
-    # ------- TAREA: Reclamar mensajes abandonados -------
-    async def reclaim_pending():
-        try:
-            while True:
-                res = await r.xautoclaim(
-                    STREAM,
-                    GROUP,
-                    CONSUMER,
-                    min_idle_time=CLAIM_MILLIS,
-                    start_id="0-0",
-                    count=100
-                )
-
-                # Redis retorna: (next_id, messages, deleted_msgids)
-                next_id, messages, deleted_ids = res
-
-                if messages:
-                    print(f"[{CONSUMER}] reclaimed {len(messages)} messages")
-
-                await asyncio.sleep(RECLAIM_INTERVAL)
-
-        except Exception as e:
-            print("Reclaim error:", e)
-
-
 
     # ------- TAREA: Leer y procesar mensajes -------
     async def read_and_process():
@@ -195,10 +168,10 @@ async def consumer_loop():
                 await asyncio.sleep(1)
 
 
-    t1 = asyncio.create_task(reclaim_pending())
-    t2 = asyncio.create_task(read_and_process())
-
-    await asyncio.gather(t1, t2)
+    try:
+        await read_and_process()
+    finally:
+        await r.aclose()
 
 
 if __name__ == "__main__":
