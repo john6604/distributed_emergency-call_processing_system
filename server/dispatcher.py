@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 from typing import List, Dict
-import time
 
 try:
     from config import env_int, env_list
@@ -31,6 +30,7 @@ BATCH_SIZE = env_int("BATCH_SIZE", 8)
 CONCURRENT_REQUESTS = env_int("CONCURRENT_REQUESTS", 4)
 BASE_RETRY_DELAY = env_int("BASE_RETRY_DELAY", 2)   # segundos
 MAX_RETRY_DELAY = env_int("MAX_RETRY_DELAY", 60)   # segundos
+HEALTH_RECHECK_INTERVAL = env_int("HEALTH_RECHECK_INTERVAL", 15)
 
 # ================================================================
 # UTILIDADES
@@ -66,11 +66,68 @@ async def health_check(session, server):
         return False
 
 
+class ServerPool:
+    def __init__(self, servers: List[str]):
+        self._servers = list(servers)
+        self._alive_servers = []
+        self._counter = 0
+        self._lock = asyncio.Lock()
+        self._has_alive = asyncio.Event()
+
+    async def update_alive(self, alive_servers: List[str]):
+        alive_set = set(alive_servers)
+        ordered_alive = [server for server in self._servers if server in alive_set]
+
+        async with self._lock:
+            self._alive_servers = ordered_alive
+            if self._alive_servers:
+                self._counter %= len(self._alive_servers)
+                self._has_alive.set()
+            else:
+                self._counter = 0
+                self._has_alive.clear()
+
+    async def next_server(self):
+        while True:
+            await self._has_alive.wait()
+
+            async with self._lock:
+                if not self._alive_servers:
+                    self._has_alive.clear()
+                    continue
+
+                server = self._alive_servers[self._counter % len(self._alive_servers)]
+                self._counter += 1
+                return server
+
+
+async def refresh_server_health(session, server_pool, verbose=False):
+    checks = await asyncio.gather(*(health_check(session, server) for server in SERVERS))
+    alive = []
+
+    for server, ok in zip(SERVERS, checks):
+        if ok:
+            alive.append(server)
+
+        if verbose:
+            print(f"  {'OK' if ok else 'CAIDO'} {server}")
+
+    await server_pool.update_alive(alive)
+    return alive
+
+
+async def health_rechecker(session, server_pool):
+    while True:
+        await asyncio.sleep(HEALTH_RECHECK_INTERVAL)
+        alive = await refresh_server_health(session, server_pool)
+        print(f"[HEALTH] Servidores vivos: {len(alive)}/{len(SERVERS)}")
+
+
 # ================================================================
 # ENVÍO DE LOTES
 # ================================================================
 
-async def post_batch(session, server, batch):
+async def post_batch(session, server_pool, batch):
     """Envía un batch con reintentos infinitos, nunca se pierde un batch."""
     
     headers = {"Content-Type": "application/json"}
@@ -87,6 +144,8 @@ async def post_batch(session, server, batch):
     delay = BASE_RETRY_DELAY
 
     while True:
+        server = await server_pool.next_server()
+
         try:
             async with session.post(server, json=payload, timeout=60, headers=headers) as resp:
                 if resp.status == 200:
@@ -108,8 +167,8 @@ async def post_batch(session, server, batch):
 # WORKER PRINCIPAL
 # ================================================================
 
-async def worker(queue, session, available_servers, progress, results_map):
-    """Toma batches de la cola y los envía al primer servidor disponible."""
+async def worker(queue, session, server_pool, progress, results_map):
+    """Toma batches de la cola y los envía por round-robin a servidores vivos."""
     
     while True:
         batch = await queue.get()
@@ -117,10 +176,7 @@ async def worker(queue, session, available_servers, progress, results_map):
             queue.task_done()
             return
 
-        # escoger servidor disponible
-        server = available_servers[int(time.time() * 1000) % len(available_servers)]
-
-        data = await post_batch(session, server, batch)
+        data = await post_batch(session, server_pool, batch)
 
         # Guardar resultados evitando duplicados
         if "results" in data:
@@ -161,6 +217,7 @@ async def main():
 
         # health check
         print("🔍 Verificando servidores...")
+        server_pool = ServerPool(SERVERS)
         alive = []
         for s in SERVERS:
             ok = await health_check(session, s)
@@ -170,9 +227,13 @@ async def main():
             else:
                 print(f"  ✖ {s} CAÍDO")
 
+        await server_pool.update_alive(alive)
+
         if not alive:
             print("❌ Ningún servidor está disponible. No se puede continuar.")
             return
+
+        health_task = asyncio.create_task(health_rechecker(session, server_pool))
 
         # generar batches
         queue = asyncio.Queue()
@@ -184,7 +245,7 @@ async def main():
 
         # lanzar workers
         workers = [
-            asyncio.create_task(worker(queue, session, alive, progress, results_map))
+            asyncio.create_task(worker(queue, session, server_pool, progress, results_map))
             for _ in range(CONCURRENT_REQUESTS)
         ]
 
@@ -195,6 +256,8 @@ async def main():
             queue.put_nowait(None)
 
         await asyncio.gather(*workers)
+        health_task.cancel()
+        await asyncio.gather(health_task, return_exceptions=True)
 
     # exportar resultados
     final_results = sorted(results_map.values(), key=lambda x: str(x["id"]))
