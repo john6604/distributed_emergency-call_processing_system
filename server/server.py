@@ -8,6 +8,15 @@ import asyncio
 import os
 
 try:
+    from keyword_extraction import extract_keywords_from_model
+except ImportError:
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from keyword_extraction import extract_keywords_from_model
+
+try:
     from config import load_env
 except ImportError:
     from .config import load_env
@@ -45,19 +54,17 @@ def check_api_key(x_api_key: Optional[str]):
     return x_api_key == API_KEY
 
 def _extract_keywords_single_sync(text: str, top_k: int = 6):
-    prompt = "Extrae las palabras clave de la emergencia: " + text
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
-    # generación con beam para mejor calidad (ajusta si quieres latencia menor)
-    with torch.inference_mode():
-        out = model.generate(**inputs, num_beams=4, max_new_tokens=64, early_stopping=True)
-    decoded = tokenizer.batch_decode(out, skip_special_tokens=True)[0]
-    # separar por comas si el modelo usa comas, sino por espacios
-    # intentamos preferir comas, si no hay comas, fallback a split por espacios
-    if "," in decoded:
-        kws = [k.strip() for k in decoded.split(",") if k.strip()]
-    else:
-        kws = [k.strip() for k in decoded.split() if k.strip()]
-    return kws[:top_k]
+    return extract_keywords_from_model(
+        text,
+        tokenizer,
+        model,
+        device,
+        top_k=top_k,
+        num_beams=4,
+        max_new_tokens=64,
+        early_stopping=True,
+        use_batch_decode=True,
+    )
 
 
 async def extract_keywords_single(text: str, top_k: int = 6):

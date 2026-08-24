@@ -10,6 +10,15 @@ from redis.exceptions import ResponseError
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 try:
+    from keyword_extraction import extract_keywords_from_model
+except ImportError:
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from keyword_extraction import extract_keywords_from_model
+
+try:
     from config import env_float, env_int, require_env
 except ImportError:
     from .config import env_float, env_int, require_env
@@ -56,16 +65,7 @@ async def heartbeat(r):
 
 
 def extract_keywords(text):
-    prompt = "Extrae las palabras clave de la emergencia: " + text
-    inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(device)
-    with torch.inference_mode():
-        out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
-    decoded = tokenizer.decode(out[0], skip_special_tokens=True)
-
-    if "," in decoded:
-        return [keyword.strip() for keyword in decoded.split(",") if keyword.strip()]
-
-    return [keyword.strip() for keyword in decoded.split() if keyword.strip()]
+    return extract_keywords_from_model(text, tokenizer, model, device)
 
 
 async def process_message(r, msg_id, fields, label="NEW"):

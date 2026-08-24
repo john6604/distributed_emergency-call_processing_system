@@ -7,6 +7,15 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 
 try:
+    from keyword_extraction import extract_keywords_from_model
+except ImportError:
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from keyword_extraction import extract_keywords_from_model
+
+try:
     from config import env_float, require_env
 except ImportError:
     from .config import env_float, require_env
@@ -54,15 +63,7 @@ def post_result(task_id, conv_id, keywords):
         print("Error de resultado:", e)
 
 def extract_keywords(text):
-    prompt = "Extrae las palabras clave de la emergencia: " + text
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(device)
-    out = model.generate(**inputs, num_beams=2, max_new_tokens=32)
-    decoded = tokenizer.decode(out[0], skip_special_tokens=True)
-    if "," in decoded:
-        kws = [k.strip() for k in decoded.split(",") if k.strip()]
-    else:
-        kws = [k.strip() for k in decoded.split() if k.strip()]
-    return kws
+    return extract_keywords_from_model(text, tokenizer, model, device)
 
 if __name__ == "__main__":
     while True:
