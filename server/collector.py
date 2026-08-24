@@ -20,14 +20,14 @@ async def main():
 
     # 2. Convertir la lista a una estructura manejable
     parsed = []
-    for msg_id, fields in msgs:
+    for _, fields in msgs:
         # Nos aseguramos de que el ID sea entero para poder ordenar bien
         try:
             order_id = int(fields["id"])
         except:
             order_id = 999999999  # fallback
 
-        parsed.append((order_id, msg_id, fields))
+        parsed.append((order_id, fields))
 
     # 3. Ordenar por el campo id original
     parsed.sort(key=lambda x: x[0])
@@ -36,10 +36,12 @@ async def main():
 
     # 4. Guardar en JSONL
     with open(OUTPUT_JSONL, "w", encoding="utf-8") as f:
-        for _, msg_id, fields in parsed:
-            # Puedes agregar el redis_id si quieres
-            fields["_redis_id"] = msg_id
-            f.write(json.dumps(fields, ensure_ascii=False) + "\n")
+        for _, fields in parsed:
+            record = {
+                "id": fields["id"],
+                "keywords": json.loads(fields.get("keywords", "[]")),
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     await r.aclose()
     print(f"✅ Archivo generado: {OUTPUT_JSONL}")
