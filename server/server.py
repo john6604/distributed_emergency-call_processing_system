@@ -5,6 +5,8 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from typing import List, Optional
 import torch
 import asyncio
+import json
+import logging
 import os
 
 try:
@@ -35,6 +37,7 @@ model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(devic
 model.eval()
 
 app = FastAPI(title="KeywordInference", version="1.0")
+logger = logging.getLogger(__name__)
 
 class TextItem(BaseModel):
     id: str
@@ -81,7 +84,8 @@ async def keywords_endpoint(req: BatchRequest, x_api_key: Optional[str] = Header
     for item in req.items:
         try:
             kws = await extract_keywords_single(item.text, item.top_k)
-        except Exception as e:
+        except Exception:
+            logger.warning("Error extrayendo keywords para item id=%s", item.id, exc_info=True)
             kws = []
         results.append({"id": item.id, "keywords": kws})
     return {"results": results}
@@ -91,7 +95,6 @@ async def keywords_endpoint(req: BatchRequest, x_api_key: Optional[str] = Header
 async def procesar_jsonl_file(file: UploadFile):
     results = []
     for line in file.file:
-        import json
         obj = json.loads(line.decode("utf-8"))
         kws = await extract_keywords_single(obj["text"])
         results.append({"id": obj["id"], "keywords": kws})
