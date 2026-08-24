@@ -1,34 +1,22 @@
-import os
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 
-def load_env():
-    base_dir = Path(__file__).resolve().parent
-    for env_path in (base_dir.parent / ".env", base_dir / ".env"):
-        if not env_path.exists():
-            continue
+def _load_root_config():
+    config_path = Path(__file__).resolve().parents[1] / "config.py"
+    spec = spec_from_file_location("_sisdis_config", config_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"No se pudo cargar {config_path}")
 
-        with env_path.open("r", encoding="utf-8") as env_file:
-            for raw_line in env_file:
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                os.environ.setdefault(key, value)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Falta configurar {name} en el entorno o en .env")
-    return value
+_config = _load_root_config()
 
-
-def env_float(name: str, default: float) -> float:
-    return float(os.getenv(name, str(default)))
-
-
-load_env()
+load_env = _config.load_env
+require_env = _config.require_env
+env_int = _config.env_int
+env_float = _config.env_float
+env_list = _config.env_list
