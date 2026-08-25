@@ -1,6 +1,6 @@
 # orchestrator.py
 import sqlite3
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
 import json
@@ -168,11 +168,20 @@ def list_tasks(status: Optional[str] = None, limit: int = 100):
         conn.close()
 
 @app.get("/results")
-def get_results(limit: int = 1000000):
+def get_results(
+    limit: int = Query(
+        10000,
+        ge=1,
+        description="Cantidad maxima de resultados a devolver. Aumentar para exportaciones grandes.",
+    )
+):
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT conv_id, result FROM tasks WHERE status='done' ORDER BY CAST(conv_id AS INTEGER)")
+        cur.execute(
+            "SELECT conv_id, result FROM tasks WHERE status='done' ORDER BY CAST(conv_id AS INTEGER) LIMIT ?",
+            (limit,),
+        )
         rows = cur.fetchall()
         out = []
         for conv_id, result in rows:
