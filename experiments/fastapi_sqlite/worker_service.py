@@ -6,19 +6,8 @@ import json
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 
-try:
-    from keyword_extraction import extract_keywords_from_model
-except ImportError:
-    import sys
-    from pathlib import Path
-
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from keyword_extraction import extract_keywords_from_model
-
-try:
-    from config import env_float, require_env
-except ImportError:
-    from .config import env_float, require_env
+from emergency_processing.config import env_float, require_env
+from emergency_processing.keyword_extraction import extract_keywords_from_model
 
 ORCH_URL = os.getenv("WORKER_ORCH_URL") or require_env("ORCH_URL")
 WORKER_ID = os.getenv("WORKER_ID", f"worker-{os.getpid()}")

@@ -38,7 +38,14 @@ htmlcov/
 *.sqlite
 *.sqlite3
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
 
 # Logs
 *.log
@@ -46,17 +53,8 @@ logs/
 
 # Generated project outputs
 progress.json
-server/progress.json
-Microservicios/progress.json
-server/resultados*.json
-server/resultados*.jsonl
-Microservicios/resultados*.json
-Microservicios/resultados*.jsonl
-
-# Local datasets / sensitive input data
-dataset/*.jsonl
-!dataset/.gitkeep
-!dataset/README.md
+outputs/*
+!outputs/.gitkeep
 
 # Editor and OS files
 .vscode/

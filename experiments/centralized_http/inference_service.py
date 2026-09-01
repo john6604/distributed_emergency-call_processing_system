@@ -1,4 +1,4 @@
-# server.py
+# inference_service.py
 from fastapi import FastAPI, UploadFile, HTTPException, Header, Request
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
@@ -9,19 +9,8 @@ import json
 import logging
 import os
 
-try:
-    from keyword_extraction import extract_keywords_from_model
-except ImportError:
-    import sys
-    from pathlib import Path
-
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from keyword_extraction import extract_keywords_from_model
-
-try:
-    from config import load_env
-except ImportError:
-    from .config import load_env
+from emergency_processing.config import load_env
+from emergency_processing.keyword_extraction import extract_keywords_from_model
 
 load_env()
 

@@ -5,16 +5,12 @@ from pydantic import BaseModel
 from typing import Optional, List
 import json
 import time
-import os
 
-try:
-    from config import load_env
-except ImportError:
-    from .config import load_env
+from emergency_processing.config import env_path, load_env
 
 load_env()
 
-DB_PATH = os.getenv("TASKS_DB", "tasks.db")
+DB_PATH = env_path("TASKS_DB", "experiments/fastapi_sqlite/runtime/tasks.db")
 app = FastAPI(title="Orchestrator")
 
 # ---------- DB helpers ----------

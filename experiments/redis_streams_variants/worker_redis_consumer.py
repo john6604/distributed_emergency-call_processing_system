@@ -8,19 +8,8 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 from redis.exceptions import ResponseError
 
-try:
-    from keyword_extraction import extract_keywords_from_model
-except ImportError:
-    import sys
-    from pathlib import Path
-
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from keyword_extraction import extract_keywords_from_model
-
-try:
-    from config import env_float, env_int, require_env
-except ImportError:
-    from .config import env_float, env_int, require_env
+from emergency_processing.config import env_float, env_int, require_env
+from emergency_processing.keyword_extraction import extract_keywords_from_model
 
 # ============================
 # CONFIG

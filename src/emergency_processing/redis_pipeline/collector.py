@@ -2,14 +2,11 @@ import json
 import os
 from redis import asyncio as aioredis
 
-try:
-    from config import require_env
-except ImportError:
-    from .config import require_env
+from ..config import env_path, require_env
 
 REDIS_URL = os.getenv("COLLECTOR_REDIS_URL") or require_env("REDIS_URL")
 STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
-OUTPUT_JSONL = os.getenv("REDIS_RESULTS_JSONL", "resultados_ordenados.jsonl")
+OUTPUT_JSONL = env_path("REDIS_RESULTS_JSONL", "outputs/redis_results.jsonl")
 
 async def main():
     r = aioredis.from_url(REDIS_URL, decode_responses=True)

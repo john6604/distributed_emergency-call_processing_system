@@ -1,17 +1,14 @@
-# dispatcher_dinamico.py
+# producer_dynamic.py
 import asyncio
 import json
 import os
 
 from redis import asyncio as aioredis
 
-try:
-    from config import require_env
-except ImportError:
-    from .config import require_env
+from emergency_processing.config import env_path, require_env
 
 REDIS_URL = os.getenv("DYNAMIC_REDIS_URL") or require_env("REDIS_URL")
-JSONL_PATH = os.getenv("JSONL_PATH", "../dataset/conversaciones1.jsonl")
+JSONL_PATH = env_path("JSONL_PATH", "data/conversaciones1.jsonl")
 STREAM_IN = os.getenv("DYNAMIC_STREAM_IN") or os.getenv("STREAM_IN", "stream:convs")
 
 

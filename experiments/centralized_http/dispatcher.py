@@ -7,18 +7,15 @@ import os
 from pathlib import Path
 from typing import List, Dict
 
-try:
-    from config import env_int, env_list
-except ImportError:
-    from .config import env_int, env_list
+from emergency_processing.config import env_int, env_list, env_path
 
 # ================================================================
 # CONFIG
 # ================================================================
 
-JSONL_PATH = os.getenv("JSONL_PATH", "../dataset/conversaciones1.jsonl")
-OUTPUT_JSON = os.getenv("OUTPUT_JSON", "resultados.json")
-PROGRESS_FILE = os.getenv("PROGRESS_FILE", "progress.json")
+JSONL_PATH = env_path("JSONL_PATH", "data/conversaciones1.jsonl")
+OUTPUT_JSON = env_path("OUTPUT_JSON", "outputs/centralized_http_results.json")
+PROGRESS_FILE = env_path("PROGRESS_FILE", "outputs/centralized_http_progress.json")
 
 SERVERS = env_list("KEYWORD_SERVER_URLS")
 if not SERVERS:

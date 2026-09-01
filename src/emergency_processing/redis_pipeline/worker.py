@@ -1,4 +1,4 @@
-# worker_dinamico.py
+# worker.py
 import asyncio
 import json
 import os
@@ -9,19 +9,8 @@ from redis import asyncio as aioredis
 from redis.exceptions import ResponseError
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-try:
-    from keyword_extraction import extract_keywords_from_model
-except ImportError:
-    import sys
-    from pathlib import Path
-
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from keyword_extraction import extract_keywords_from_model
-
-try:
-    from config import env_float, env_int, require_env
-except ImportError:
-    from .config import env_float, env_int, require_env
+from ..config import env_float, env_int, require_env
+from ..keyword_extraction import extract_keywords_from_model
 
 REDIS_URL = os.getenv("DYNAMIC_REDIS_URL") or require_env("REDIS_URL")
 STREAM_IN = os.getenv("DYNAMIC_STREAM_IN") or os.getenv("STREAM_IN", "stream:convs")

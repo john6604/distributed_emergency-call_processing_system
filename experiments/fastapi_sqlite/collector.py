@@ -1,16 +1,12 @@
 # collector.py
 import json
-import os
 
 import requests
 
-try:
-    from config import require_env
-except ImportError:
-    from .config import require_env
+from emergency_processing.config import env_path, require_env
 
 ORCH_URL = require_env("ORCH_URL")
-OUTPUT_JSONL = os.getenv("MICROSERVICES_RESULTS_JSONL", "resultados_microservicios.jsonl")
+OUTPUT_JSONL = env_path("MICROSERVICES_RESULTS_JSONL", "outputs/fastapi_sqlite_results.jsonl")
 resp = requests.get(f"{ORCH_URL}/results", timeout=300)
 resp.raise_for_status()
 results = resp.json()
