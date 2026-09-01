@@ -2,7 +2,15 @@ import os
 from pathlib import Path
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_APPLICATION_ROOT = (
+    SOURCE_REPOSITORY_ROOT
+    if (SOURCE_REPOSITORY_ROOT / "pyproject.toml").exists()
+    else Path.cwd()
+)
+REPOSITORY_ROOT = Path(
+    os.getenv("EMERGENCY_PROCESSING_ROOT", DEFAULT_APPLICATION_ROOT)
+).resolve()
 ENV_PATH = REPOSITORY_ROOT / ".env"
 
 

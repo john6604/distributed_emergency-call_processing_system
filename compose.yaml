@@ -1,0 +1,68 @@
+x-application: &application
+  image: distributed-emergency-call-processing:local
+  build:
+    context: .
+  env_file:
+    - .env
+  init: true
+
+x-application-environment: &application-environment
+  EMERGENCY_PROCESSING_ROOT: /app
+  REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  producer:
+    <<: *application
+    command: ["python", "-m", "emergency_processing.redis_pipeline.producer"]
+    environment:
+      <<: *application-environment
+      DISPATCHER_REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+      JSONL_PATH: data/conversaciones1.jsonl
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data:ro
+    restart: "no"
+
+  worker:
+    <<: *application
+    command: ["python", "-m", "emergency_processing.redis_pipeline.worker"]
+    environment:
+      <<: *application-environment
+      DYNAMIC_REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+      HF_HOME: /cache/huggingface
+    depends_on:
+      producer:
+        condition: service_completed_successfully
+    volumes:
+      - huggingface_cache:/cache/huggingface
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  collector:
+    <<: *application
+    profiles: ["collect"]
+    command: ["python", "-m", "emergency_processing.redis_pipeline.collector"]
+    environment:
+      <<: *application-environment
+      COLLECTOR_REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+      REDIS_RESULTS_JSONL: outputs/redis_results.jsonl
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./outputs:/app/outputs
+    restart: "no"
+
+volumes:
+  huggingface_cache:

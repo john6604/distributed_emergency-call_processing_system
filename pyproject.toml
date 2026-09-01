@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distributed-emergency-call-processing"
+version = "0.1.0"
+description = "Distributed Emergency Call Processing System"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "redis>=5,<8",
+    "torch>=2.5,<3",
+    "transformers>=4.57,<5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
