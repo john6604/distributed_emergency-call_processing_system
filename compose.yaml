@@ -9,6 +9,7 @@ x-application: &application
 x-application-environment: &application-environment
   EMERGENCY_PROCESSING_ROOT: /app
   REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+  PIPELINE_METADATA_KEY: ${PIPELINE_METADATA_KEY:-emergency_processing:batch}
 
 services:
   redis:
@@ -51,17 +52,29 @@ services:
 
   collector:
     <<: *application
-    profiles: ["collect"]
     command: ["python", "-m", "emergency_processing.redis_pipeline.collector"]
     environment:
       <<: *application-environment
       COLLECTOR_REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
+      COLLECTOR_BLOCK_MS: ${COLLECTOR_BLOCK_MS:-5000}
       REDIS_RESULTS_JSONL: outputs/redis_results.jsonl
+    depends_on:
+      producer:
+        condition: service_completed_successfully
+    volumes:
+      - ./outputs:/app/outputs
+    restart: "no"
+
+  reset:
+    <<: *application
+    profiles: ["maintenance"]
+    command: ["python", "-m", "emergency_processing.redis_pipeline.reset"]
+    environment:
+      <<: *application-environment
+      RESET_REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
     depends_on:
       redis:
         condition: service_healthy
-    volumes:
-      - ./outputs:/app/outputs
     restart: "no"
 
 volumes:
