@@ -1,17 +1,12 @@
-# dispatcher_advanced.py
-
 import asyncio
-import aiohttp
 import json
 import os
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
+
+import aiohttp
 
 from emergency_processing.config import env_int, env_list, env_path
-
-# ================================================================
-# CONFIG
-# ================================================================
 
 JSONL_PATH = env_path("JSONL_PATH", "data/conversaciones1.jsonl")
 OUTPUT_JSON = env_path("OUTPUT_JSON", "outputs/centralized_http_results.json")
@@ -19,25 +14,25 @@ PROGRESS_FILE = env_path("PROGRESS_FILE", "outputs/centralized_http_progress.jso
 
 SERVERS = env_list("KEYWORD_SERVER_URLS")
 if not SERVERS:
-    raise RuntimeError("Falta configurar KEYWORD_SERVER_URLS en el entorno o en .env")
+    raise RuntimeError(
+        "Required setting KEYWORD_SERVER_URLS is missing from the environment "
+        "or .env file."
+    )
 
 API_KEY = os.getenv("KEYWORDS_API_KEY") or os.getenv("API_KEY")
 
 BATCH_SIZE = env_int("BATCH_SIZE", 8)
 CONCURRENT_REQUESTS = env_int("CONCURRENT_REQUESTS", 4)
-BASE_RETRY_DELAY = env_int("BASE_RETRY_DELAY", 2)   # segundos
-MAX_RETRY_DELAY = env_int("MAX_RETRY_DELAY", 60)   # segundos
+BASE_RETRY_DELAY = env_int("BASE_RETRY_DELAY", 2)
+MAX_RETRY_DELAY = env_int("MAX_RETRY_DELAY", 60)
 HEALTH_RECHECK_INTERVAL = env_int("HEALTH_RECHECK_INTERVAL", 15)
-
-# ================================================================
-# UTILIDADES
-# ================================================================
 
 def load_jsonl(path: str) -> List[dict]:
     items = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip(): continue
+    with open(path, "r", encoding="utf-8") as input_file:
+        for line in input_file:
+            if not line.strip():
+                continue
             items.append(json.loads(line))
     return items
 
@@ -46,19 +41,21 @@ def load_progress() -> Dict:
     if not Path(PROGRESS_FILE).exists():
         return {"processed_ids": []}
 
-    with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(PROGRESS_FILE, "r", encoding="utf-8") as progress_file:
+        return json.load(progress_file)
 
 
 def save_progress(progress: Dict):
-    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-        json.dump(progress, f, indent=2)
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as progress_file:
+        json.dump(progress, progress_file, indent=2)
 
 
 async def health_check(session, server):
     try:
-        async with session.get(server.replace("/keywords", "/health"), timeout=5) as r:
-            return r.status == 200
+        async with session.get(
+            server.replace("/keywords", "/health"), timeout=5
+        ) as response:
+            return response.status == 200
     except:
         return False
 
@@ -99,7 +96,9 @@ class ServerPool:
 
 
 async def refresh_server_health(session, server_pool, verbose=False):
-    checks = await asyncio.gather(*(health_check(session, server) for server in SERVERS))
+    checks = await asyncio.gather(
+        *(health_check(session, server) for server in SERVERS)
+    )
     alive = []
 
     for server, ok in zip(SERVERS, checks):
@@ -107,7 +106,7 @@ async def refresh_server_health(session, server_pool, verbose=False):
             alive.append(server)
 
         if verbose:
-            print(f"  {'OK' if ok else 'CAIDO'} {server}")
+            print(f"  {'UP' if ok else 'DOWN'} {server}")
 
     await server_pool.update_alive(alive)
     return alive
@@ -117,24 +116,24 @@ async def health_rechecker(session, server_pool):
     while True:
         await asyncio.sleep(HEALTH_RECHECK_INTERVAL)
         alive = await refresh_server_health(session, server_pool)
-        print(f"[HEALTH] Servidores vivos: {len(alive)}/{len(SERVERS)}")
+        print(f"[HEALTH] Available servers: {len(alive)}/{len(SERVERS)}")
 
-
-# ================================================================
-# ENVÍO DE LOTES
-# ================================================================
 
 async def post_batch(session, server_pool, batch):
-    """Envía un batch con reintentos infinitos, nunca se pierde un batch."""
-    
+    """Post one batch, retrying indefinitely so it is not discarded."""
+
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["X-API-KEY"] = API_KEY
 
     payload = {
         "items": [
-            {"id": it["id"], "text": it["text"], "top_k": it.get("top_k", 6)}
-            for it in batch
+            {
+                "id": item["id"],
+                "text": item["text"],
+                "top_k": item.get("top_k", 6),
+            }
+            for item in batch
         ]
     }
 
@@ -144,29 +143,29 @@ async def post_batch(session, server_pool, batch):
         server = await server_pool.next_server()
 
         try:
-            async with session.post(server, json=payload, timeout=60, headers=headers) as resp:
-                if resp.status == 200:
-                    return await resp.json()
+            async with session.post(
+                server, json=payload, timeout=60, headers=headers
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
 
-                else:
-                    msg = await resp.text()
-                    print(f"[WARN] Server {server} → {resp.status}: {msg}")
+                message = await response.text()
+                print(
+                    f"[WARNING] Server {server} returned "
+                    f"{response.status}: {message}"
+                )
 
-        except Exception as e:
-            print(f"[ERROR] Error contacting {server}: {e}")
+        except Exception as error:
+            print(f"[ERROR] Could not contact {server}: {error}")
 
         print(f"[RETRY] Waiting {delay}s before retry...")
         await asyncio.sleep(delay)
         delay = min(delay * 2, MAX_RETRY_DELAY)
 
 
-# ================================================================
-# WORKER PRINCIPAL
-# ================================================================
+async def process_batches(queue, session, server_pool, progress, results_map):
+    """Send queued batches to available servers in round-robin order."""
 
-async def worker(queue, session, server_pool, progress, results_map):
-    """Toma batches de la cola y los envía por round-robin a servidores vivos."""
-    
     while True:
         batch = await queue.get()
         if batch is None:
@@ -175,80 +174,72 @@ async def worker(queue, session, server_pool, progress, results_map):
 
         data = await post_batch(session, server_pool, batch)
 
-        # Guardar resultados evitando duplicados
+        # A retried batch may return an ID already recorded in progress.
         if "results" in data:
-            for r in data["results"]:
-                rid = r["id"]
-                if rid not in results_map:
-                    results_map[rid] = r
-                    progress["processed_ids"].append(rid)
+            for result in data["results"]:
+                result_id = result["id"]
+                if result_id not in results_map:
+                    results_map[result_id] = result
+                    progress["processed_ids"].append(result_id)
 
         save_progress(progress)
 
         queue.task_done()
 
 
-# ================================================================
-# MAIN
-# ================================================================
-
 async def main():
-    print("📌 Cargando dataset…")
+    print("Loading dataset...")
     items = load_jsonl(JSONL_PATH)
     progress = load_progress()
 
     processed = set(progress["processed_ids"])
     items_to_process = [it for it in items if it["id"] not in processed]
 
-    print(f"Total: {len(items)} | Pendientes: {len(items_to_process)}")
+    print(f"Tasks: {len(items)} total, {len(items_to_process)} pending.")
 
     if not items_to_process:
-        print("Todo ya está procesado. Saliendo.")
+        print("All tasks have already been processed.")
         return
 
-    # session global
     connector = aiohttp.TCPConnector(limit=0)
     timeout = aiohttp.ClientTimeout(total=None)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
 
-        # health check
-        print("🔍 Verificando servidores...")
+        print("Checking inference servers...")
         server_pool = ServerPool(SERVERS)
         alive = []
-        for s in SERVERS:
-            ok = await health_check(session, s)
+        for server in SERVERS:
+            ok = await health_check(session, server)
             if ok:
-                alive.append(s)
-                print(f"  ✔ {s} OK")
+                alive.append(server)
+                print(f"  UP {server}")
             else:
-                print(f"  ✖ {s} CAÍDO")
+                print(f"  DOWN {server}")
 
         await server_pool.update_alive(alive)
 
         if not alive:
-            print("❌ Ningún servidor está disponible. No se puede continuar.")
+            print("No inference servers are available; processing cannot continue.")
             return
 
         health_task = asyncio.create_task(health_rechecker(session, server_pool))
 
-        # generar batches
         queue = asyncio.Queue()
-        for i in range(0, len(items_to_process), BATCH_SIZE):
-            queue.put_nowait(items_to_process[i:i+BATCH_SIZE])
+        for offset in range(0, len(items_to_process), BATCH_SIZE):
+            queue.put_nowait(items_to_process[offset : offset + BATCH_SIZE])
 
-        # mapa de resultados sin duplicados
         results_map = {}
 
-        # lanzar workers
         workers = [
-            asyncio.create_task(worker(queue, session, server_pool, progress, results_map))
+            asyncio.create_task(
+                process_batches(queue, session, server_pool, progress, results_map)
+            )
             for _ in range(CONCURRENT_REQUESTS)
         ]
 
         await queue.join()
 
-        # terminar workers
         for _ in workers:
             queue.put_nowait(None)
 
@@ -256,13 +247,12 @@ async def main():
         health_task.cancel()
         await asyncio.gather(health_task, return_exceptions=True)
 
-    # exportar resultados
     final_results = sorted(results_map.values(), key=lambda x: str(x["id"]))
 
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(final_results, f, indent=2, ensure_ascii=False)
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as output_file:
+        json.dump(final_results, output_file, indent=2, ensure_ascii=False)
 
-    print(f"✅ Guardado {len(final_results)} resultados en {OUTPUT_JSON}")
+    print(f"Saved {len(final_results)} results to {OUTPUT_JSON}.")
 
 
 if __name__ == "__main__":

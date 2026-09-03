@@ -33,7 +33,9 @@ def load_env():
 def require_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
-        raise RuntimeError(f"Falta configurar {name} en el entorno o en .env")
+        raise RuntimeError(
+            f"Required setting {name} is missing from the environment or .env file."
+        )
     return value
 
 

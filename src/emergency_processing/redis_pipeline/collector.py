@@ -75,6 +75,8 @@ def progress_step(expected_tasks):
 
 async def collect_unique_results(r, expected_tasks):
     results = {}
+    # Replay from the beginning so a restarted collector reconstructs progress
+    # from results already present in the stream.
     last_stream_id = "0-0"
     last_reported = 0
     report_every = progress_step(expected_tasks)
@@ -97,6 +99,7 @@ async def collect_unique_results(r, expected_tasks):
                     print(f"Ignoring result entry {entry_id} without a task id.")
                     continue
 
+                # Delivery is at least once, so retain one result per task ID.
                 if task_id not in results:
                     results[task_id] = fields
 

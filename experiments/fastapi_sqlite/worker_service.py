@@ -1,10 +1,9 @@
-# worker_service.py
-import requests
-import time
 import os
-import json
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import time
+
+import requests
 import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from emergency_processing.config import env_float, require_env
 from emergency_processing.keyword_extraction import extract_keywords_from_model
@@ -18,41 +17,50 @@ HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 MODEL_AUTH = {"use_auth_token": HF_TOKEN} if HF_TOKEN else {}
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-print("Cargando modelo.")
+print(f"Loading model {MODEL_NAME}.")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(device)
 model.eval()
-print("Modelo cargado, ID:", WORKER_ID)
+print(f"Model loaded. Worker ready: {WORKER_ID}.")
+
 
 def claim_task():
     url = f"{ORCH_URL}/claim"
     try:
-        resp = requests.post(url, params={"worker": WORKER_ID}, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
+        response = requests.post(url, params={"worker": WORKER_ID}, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
             if data is None:
                 return None
             return data
-        else:
-            print("Reclamo fallido: ", resp.status_code, resp.text)
-            return None
-    except Exception as e:
-        print("Error en el reclamo: ", e)
+
+        print("Task claim failed:", response.status_code, response.text)
+        return None
+    except Exception as error:
+        print("Task claim request failed:", error)
         time.sleep(2)
         return None
 
+
 def post_result(task_id, conv_id, keywords):
     url = f"{ORCH_URL}/result"
-    payload = {"task_id": task_id, "conv_id": conv_id, "keywords": keywords, "worker": WORKER_ID}
+    payload = {
+        "task_id": task_id,
+        "conv_id": conv_id,
+        "keywords": keywords,
+        "worker": WORKER_ID,
+    }
     try:
-        resp = requests.post(url, json=payload, timeout=30)
-        if resp.status_code != 200:
-            print("Resultado fallido", resp.status_code, resp.text)
-    except Exception as e:
-        print("Error de resultado:", e)
+        response = requests.post(url, json=payload, timeout=30)
+        if response.status_code != 200:
+            print("Result submission failed:", response.status_code, response.text)
+    except Exception as error:
+        print("Result submission request failed:", error)
+
 
 def extract_keywords(text):
     return extract_keywords_from_model(text, tokenizer, model, device)
+
 
 if __name__ == "__main__":
     while True:
@@ -63,10 +71,10 @@ if __name__ == "__main__":
         task_id = task["task_id"]
         conv_id = task["conv_id"]
         text = task["text"]
-        print(f"Tarea reclamada {task_id} conv {conv_id}")
+        print(f"Claimed task {task_id} for conversation {conv_id}.")
         try:
-            kws = extract_keywords(text)
-            post_result(task_id, conv_id, kws)
-            print(f"ACK - Tarea completada {task_id}")
-        except Exception as e:
-            print("Error de procesamiento:", e)
+            keywords = extract_keywords(text)
+            post_result(task_id, conv_id, keywords)
+            print(f"Completed task {task_id}.")
+        except Exception as error:
+            print(f"Task {task_id} processing failed: {error}")

@@ -1,10 +1,10 @@
-# orchestrator.py
-import sqlite3
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
-from pydantic import BaseModel
-from typing import Optional, List
 import json
+import sqlite3
 import time
+from typing import List, Optional
+
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 
 from emergency_processing.config import env_path, load_env
 
@@ -13,35 +13,36 @@ load_env()
 DB_PATH = env_path("TASKS_DB", "experiments/fastapi_sqlite/runtime/tasks.db")
 app = FastAPI(title="Orchestrator")
 
-# ---------- DB helpers ----------
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.executescript("""
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        conv_id TEXT,
-        text TEXT,
-        status TEXT DEFAULT 'pending', -- pending | processing | done | failed
-        worker TEXT,
-        locked_at INTEGER,
-        result TEXT,
-        created_at INTEGER DEFAULT (strftime('%s','now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-    """)
-    conn.commit()
-    conn.close()
+def initialize_database():
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
+    cursor.executescript(
+        """
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conv_id TEXT,
+            text TEXT,
+            status TEXT DEFAULT 'pending', -- pending | processing | done | failed
+            worker TEXT,
+            locked_at INTEGER,
+            result TEXT,
+            created_at INTEGER DEFAULT (strftime('%s','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+        """
+    )
+    connection.commit()
+    connection.close()
 
-def get_conn():
-    # use a fresh connection per request
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    return conn
 
-init_db()
+def get_connection():
+    return sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
 
-# ---------- Pydantic models ----------
+
+initialize_database()
+
+
 class ClaimResponse(BaseModel):
     task_id: int
     conv_id: str
@@ -53,157 +54,192 @@ class ResultIn(BaseModel):
     keywords: List[str]
     worker: Optional[str] = None
 
-# ---------- Endpoints ----------
+
 @app.post("/ingest")
 async def ingest(file: UploadFile = File(...)):
-    """
-    Subir un archivo jsonl con objetos {"id": "...", "text": "..."}
-    Inserta filas en tasks.
-    """
-    conn = get_conn()
-    cur = conn.cursor()
+    """Insert tasks from a JSONL upload."""
+    connection = get_connection()
+    cursor = connection.cursor()
     inserted = 0
     try:
-        # start transaction
-        cur.execute("BEGIN IMMEDIATE")
+        cursor.execute("BEGIN IMMEDIATE")
         for raw in file.file:
             if not raw.strip():
                 continue
-            obj = json.loads(raw.decode("utf-8"))
-            conv_id = str(obj.get("id"))
-            text = obj.get("text","")
-            cur.execute(
+            record = json.loads(raw.decode("utf-8"))
+            conversation_id = str(record.get("id"))
+            text = record.get("text", "")
+            cursor.execute(
                 "INSERT INTO tasks (conv_id, text, status) VALUES (?, ?, 'pending')",
-                (conv_id, text)
+                (conversation_id, text),
             )
             inserted += 1
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        connection.commit()
+    except Exception as error:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=str(error))
     finally:
-        conn.close()
+        connection.close()
     return {"inserted": inserted}
+
 
 @app.post("/claim", response_model=Optional[ClaimResponse])
 def claim(worker: str):
-    """
-    Worker atomic claim:
-      1) SELECT id FROM tasks WHERE status='pending' ORDER BY id LIMIT 1
-      2) UPDATE that row to status='processing', worker=worker, locked_at=now
-    Uses a transaction + conditional update to avoid races.
+    """Claim one pending task atomically.
+
+    The immediate transaction and conditional update prevent concurrent workers
+    from claiming the same row.
     """
     now = int(time.time())
-    conn = get_conn()
-    cur = conn.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
     try:
-        cur.execute("BEGIN IMMEDIATE")
-        cur.execute("SELECT id, conv_id, text FROM tasks WHERE status='pending' ORDER BY id LIMIT 1")
-        row = cur.fetchone()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            "SELECT id, conv_id, text FROM tasks "
+            "WHERE status='pending' ORDER BY id LIMIT 1"
+        )
+        row = cursor.fetchone()
         if not row:
-            conn.commit()
+            connection.commit()
             return None
         task_id = row[0]
-        # try to claim
-        cur.execute(
-            "UPDATE tasks SET status='processing', worker=?, locked_at=? WHERE id=? AND status='pending'",
-            (worker, now, task_id)
+        cursor.execute(
+            "UPDATE tasks SET status='processing', worker=?, locked_at=? "
+            "WHERE id=? AND status='pending'",
+            (worker, now, task_id),
         )
-        if cur.rowcount != 1:
-            # someone else claimed it concurrently
-            conn.rollback()
+        if cursor.rowcount != 1:
+            connection.rollback()
             return None
-        cur.execute("SELECT id, conv_id, text FROM tasks WHERE id=?", (task_id,))
-        r = cur.fetchone()
-        conn.commit()
-        return ClaimResponse(task_id=r[0], conv_id=r[1], text=r[2])
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        cursor.execute(
+            "SELECT id, conv_id, text FROM tasks WHERE id=?", (task_id,)
+        )
+        claimed_row = cursor.fetchone()
+        connection.commit()
+        return ClaimResponse(
+            task_id=claimed_row[0], conv_id=claimed_row[1], text=claimed_row[2]
+        )
+    except Exception as error:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=str(error))
     finally:
-        conn.close()
+        connection.close()
+
 
 @app.post("/result")
 def result(data: ResultIn):
-    """
-    Worker posts result: saves keywords and marks task done.
-    """
-    conn = get_conn()
-    cur = conn.cursor()
+    """Store a worker result and mark its task as complete."""
+    connection = get_connection()
+    cursor = connection.cursor()
     try:
-        cur.execute("BEGIN IMMEDIATE")
-        cur.execute(
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
             "UPDATE tasks SET status='done', result=?, worker=?, locked_at=? WHERE id=?",
-            (json.dumps(data.keywords, ensure_ascii=False), data.worker or 'unknown', int(time.time()), data.task_id)
+            (
+                json.dumps(data.keywords, ensure_ascii=False),
+                data.worker or "unknown",
+                int(time.time()),
+                data.task_id,
+            ),
         )
-        if cur.rowcount != 1:
-            conn.rollback()
-            raise HTTPException(status_code=404, detail="task not found or not updatable")
-        conn.commit()
+        if cursor.rowcount != 1:
+            connection.rollback()
+            raise HTTPException(
+                status_code=404, detail="Task was not found or could not be updated."
+            )
+        connection.commit()
         return {"ok": True}
     except HTTPException:
         raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=str(error))
     finally:
-        conn.close()
+        connection.close()
+
 
 @app.get("/tasks")
 def list_tasks(status: Optional[str] = None, limit: int = 100):
-    conn = get_conn()
-    cur = conn.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
     try:
         if status:
-            cur.execute("SELECT id, conv_id, status, worker, locked_at, created_at FROM tasks WHERE status=? ORDER BY id LIMIT ?", (status, limit))
+            cursor.execute(
+                "SELECT id, conv_id, status, worker, locked_at, created_at "
+                "FROM tasks WHERE status=? ORDER BY id LIMIT ?",
+                (status, limit),
+            )
         else:
-            cur.execute("SELECT id, conv_id, status, worker, locked_at, created_at FROM tasks ORDER BY id LIMIT ?", (limit,))
-        rows = cur.fetchall()
-        return [{"id": r[0], "conv_id": r[1], "status": r[2], "worker": r[3], "locked_at": r[4], "created_at": r[5]} for r in rows]
+            cursor.execute(
+                "SELECT id, conv_id, status, worker, locked_at, created_at "
+                "FROM tasks ORDER BY id LIMIT ?",
+                (limit,),
+            )
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "conv_id": row[1],
+                "status": row[2],
+                "worker": row[3],
+                "locked_at": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
     finally:
-        conn.close()
+        connection.close()
+
 
 @app.get("/results")
 def get_results(
     limit: int = Query(
         10000,
         ge=1,
-        description="Cantidad maxima de resultados a devolver. Aumentar para exportaciones grandes.",
+        description="Maximum number of results to return; increase for large exports.",
     )
 ):
-    conn = get_conn()
-    cur = conn.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
     try:
-        cur.execute(
-            "SELECT conv_id, result FROM tasks WHERE status='done' ORDER BY CAST(conv_id AS INTEGER) LIMIT ?",
+        cursor.execute(
+            "SELECT conv_id, result FROM tasks WHERE status='done' "
+            "ORDER BY CAST(conv_id AS INTEGER) LIMIT ?",
             (limit,),
         )
-        rows = cur.fetchall()
-        out = []
+        rows = cursor.fetchall()
+        results = []
         for conv_id, result in rows:
-            kws = json.loads(result) if result else []
-            out.append({"id": conv_id, "keywords": kws})
-        return out
+            keywords = json.loads(result) if result else []
+            results.append({"id": conv_id, "keywords": keywords})
+        return results
     finally:
-        conn.close()
+        connection.close()
+
 
 @app.post("/reclaim-stale")
 def reclaim_stale(max_age: int = 120):
     now = int(time.time())
     cutoff = now - max_age
-    conn = get_conn()
-    cur = conn.cursor()
+    connection = get_connection()
+    cursor = connection.cursor()
     try:
-        cur.execute("BEGIN IMMEDIATE")
-        cur.execute("UPDATE tasks SET status='pending', worker=NULL, locked_at=NULL WHERE status='processing' AND locked_at < ?", (cutoff,))
-        changed = cur.rowcount
-        conn.commit()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            "UPDATE tasks SET status='pending', worker=NULL, locked_at=NULL "
+            "WHERE status='processing' AND locked_at < ?",
+            (cutoff,),
+        )
+        changed = cursor.rowcount
+        connection.commit()
         return {"reclaimed": changed}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=str(error))
     finally:
-        conn.close()
+        connection.close()
+
 
 @app.get("/health")
 def health():

@@ -1,13 +1,13 @@
-# inference_service.py
-from fastapi import FastAPI, UploadFile, HTTPException, Header, Request
-from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from typing import List, Optional
-import torch
 import asyncio
 import json
 import logging
 import os
+from typing import List, Optional
+
+import torch
+from fastapi import FastAPI, Header, HTTPException, UploadFile
+from pydantic import BaseModel
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from emergency_processing.config import load_env
 from emergency_processing.keyword_extraction import extract_keywords_from_model
@@ -19,14 +19,15 @@ API_KEY = os.getenv("KEYWORDS_API_KEY") or os.getenv("API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 MODEL_AUTH = {"use_auth_token": HF_TOKEN} if HF_TOKEN else {}
 
-# Cargar modelo una vez al inicio (tiempo de carga)
+# Load one model instance when the service starts.
 device = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)  # si repo privado
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **MODEL_AUTH)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(device)
 model.eval()
 
 app = FastAPI(title="KeywordInference", version="1.0")
 logger = logging.getLogger(__name__)
+
 
 class TextItem(BaseModel):
     id: str
@@ -36,16 +37,19 @@ class TextItem(BaseModel):
 class BatchRequest(BaseModel):
     items: List[TextItem]
 
+
 @app.get("/health")
 def health():
     return {"status": "ok", "device": device}
 
-def check_api_key(x_api_key: Optional[str]):
+
+def is_api_key_valid(x_api_key: Optional[str]):
     if API_KEY is None:
         return True
     return x_api_key == API_KEY
 
-def _extract_keywords_single_sync(text: str, top_k: int = 6):
+
+def _extract_keywords_sync(text: str, top_k: int = 6):
     return extract_keywords_from_model(
         text,
         tokenizer,
@@ -59,32 +63,37 @@ def _extract_keywords_single_sync(text: str, top_k: int = 6):
     )
 
 
-async def extract_keywords_single(text: str, top_k: int = 6):
-    return await asyncio.to_thread(_extract_keywords_single_sync, text, top_k)
+async def extract_keywords_async(text: str, top_k: int = 6):
+    return await asyncio.to_thread(_extract_keywords_sync, text, top_k)
+
 
 @app.post("/keywords")
-async def keywords_endpoint(req: BatchRequest, x_api_key: Optional[str] = Header(None)):
-    if not check_api_key(x_api_key):
+async def keywords_endpoint(
+    request: BatchRequest, x_api_key: Optional[str] = Header(None)
+):
+    if not is_api_key_valid(x_api_key):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Procesar items en paralelo asincrónico (pero generación es bloqueante GPU/CPU)
-    # Hacemos procesado secuencial por item para evitar saturar memoria; si quieres batch interno, cambiar.
+    # Generate sequentially because model inference is blocking and concurrent
+    # calls could exhaust accelerator memory.
     results = []
-    for item in req.items:
+    for item in request.items:
         try:
-            kws = await extract_keywords_single(item.text, item.top_k)
+            keywords = await extract_keywords_async(item.text, item.top_k)
         except Exception:
-            logger.warning("Error extrayendo keywords para item id=%s", item.id, exc_info=True)
-            kws = []
-        results.append({"id": item.id, "keywords": kws})
+            logger.warning(
+                "Keyword extraction failed for item id=%s", item.id, exc_info=True
+            )
+            keywords = []
+        results.append({"id": item.id, "keywords": keywords})
     return {"results": results}
 
-# Opcional: endpoint para subir jsonl directamente (NO recomendado para dataset grande vía upload)
+
 @app.post("/procesar-jsonl-file")
 async def procesar_jsonl_file(file: UploadFile):
     results = []
     for line in file.file:
-        obj = json.loads(line.decode("utf-8"))
-        kws = await extract_keywords_single(obj["text"])
-        results.append({"id": obj["id"], "keywords": kws})
+        record = json.loads(line.decode("utf-8"))
+        keywords = await extract_keywords_async(record["text"])
+        results.append({"id": record["id"], "keywords": keywords})
     return {"results": results}

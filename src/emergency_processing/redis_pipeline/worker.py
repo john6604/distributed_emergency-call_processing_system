@@ -1,4 +1,3 @@
-# worker.py
 import asyncio
 import json
 import os
@@ -15,13 +14,17 @@ from ..keyword_extraction import extract_keywords_from_model
 REDIS_URL = os.getenv("DYNAMIC_REDIS_URL") or require_env("REDIS_URL")
 STREAM_IN = os.getenv("DYNAMIC_STREAM_IN") or os.getenv("STREAM_IN", "stream:convs")
 STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
-GROUP = os.getenv("DYNAMIC_CONSUMER_GROUP") or os.getenv("CONSUMER_GROUP", "group2:convs")
-CONSUMER = f"worker-{os.getenv('HOSTNAME', 'node')}-{os.getpid()}"
+CONSUMER_GROUP = os.getenv("DYNAMIC_CONSUMER_GROUP") or os.getenv(
+    "CONSUMER_GROUP", "group2:convs"
+)
+CONSUMER_NAME = f"worker-{os.getenv('HOSTNAME', 'node')}-{os.getpid()}"
 
 WORKERS_SET = os.getenv("WORKERS_SET", "workers:active")
 WORKER_HEARTBEAT_SECONDS = env_int("WORKER_HEARTBEAT_SECONDS", 5)
 
-BATCH = env_int("DYNAMIC_CONSUMER_BATCH", env_int("CONSUMER_BATCH", 4))
+CONSUMER_BATCH = env_int(
+    "DYNAMIC_CONSUMER_BATCH", env_int("CONSUMER_BATCH", 4)
+)
 CLAIM_MILLIS = env_int("CLAIM_MILLIS", 30000)
 RECLAIM_INTERVAL = env_float("RECLAIM_INTERVAL", 20.0)
 SLEEP_EMPTY = env_float("SLEEP_EMPTY", 1.0)
@@ -36,20 +39,24 @@ model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, **MODEL_AUTH).to(devic
 model.eval()
 
 
-async def ensure_group(r):
+async def ensure_consumer_group(redis_client):
     try:
-        await r.xgroup_create(STREAM_IN, GROUP, id="0", mkstream=True)
-        print(f"Consumer group '{GROUP}' creado para {STREAM_IN}")
+        await redis_client.xgroup_create(
+            STREAM_IN, CONSUMER_GROUP, id="0", mkstream=True
+        )
+        print(
+            f"Consumer group '{CONSUMER_GROUP}' created for stream '{STREAM_IN}'."
+        )
     except ResponseError as error:
         if "BUSYGROUP" in str(error):
-            print(f"Consumer group '{GROUP}' ya existe")
+            print(f"Consumer group '{CONSUMER_GROUP}' already exists.")
             return
         raise
 
 
-async def heartbeat(r):
+async def heartbeat(redis_client):
     while True:
-        await r.hset(WORKERS_SET, CONSUMER, int(time.time()))
+        await redis_client.hset(WORKERS_SET, CONSUMER_NAME, int(time.time()))
         await asyncio.sleep(WORKER_HEARTBEAT_SECONDS)
 
 
@@ -57,8 +64,8 @@ def extract_keywords(text):
     return extract_keywords_from_model(text, tokenizer, model, device)
 
 
-async def process_message(r, msg_id, fields, label="NEW"):
-    conv_id = fields.get("id")
+async def process_message(redis_client, message_id, fields, label="NEW"):
+    conversation_id = fields.get("id")
     text = fields.get("text", "")
 
     if isinstance(text, bytes):
@@ -66,48 +73,62 @@ async def process_message(r, msg_id, fields, label="NEW"):
 
     try:
         keywords = await asyncio.to_thread(extract_keywords, text)
-        await r.xadd(
+        await redis_client.xadd(
             STREAM_OUT,
             {
-                "id": conv_id,
+                "id": conversation_id,
                 "keywords": json.dumps(keywords, ensure_ascii=False),
             },
         )
-        await r.xack(STREAM_IN, GROUP, msg_id)
-        print(f"[{CONSUMER}] processed {label} id={conv_id} acked {msg_id}")
+        # Publish before acknowledging so interrupted work remains reclaimable
+        # through the pending entries list.
+        await redis_client.xack(STREAM_IN, CONSUMER_GROUP, message_id)
+        print(
+            f"[{CONSUMER_NAME}] Processed {label} task id={conversation_id}; "
+            f"acknowledged message {message_id}."
+        )
     except Exception as error:
-        print(f"[{CONSUMER}] error processing {label} {msg_id}: {error}")
+        print(
+            f"[{CONSUMER_NAME}] Error processing {label} message "
+            f"{message_id}: {error}"
+        )
 
 
-async def process_messages(r, messages, label):
+async def process_messages(redis_client, messages, label):
     for _, stream_messages in messages:
-        for msg_id, fields in stream_messages:
-            await process_message(r, msg_id, fields, label)
+        for message_id, fields in stream_messages:
+            await process_message(redis_client, message_id, fields, label)
 
 
-async def reclaim_stale_messages(r):
-    next_id, messages, _ = await r.xautoclaim(
+async def reclaim_stale_messages(redis_client):
+    next_id, messages, _ = await redis_client.xautoclaim(
         STREAM_IN,
-        GROUP,
-        CONSUMER,
+        CONSUMER_GROUP,
+        CONSUMER_NAME,
         min_idle_time=CLAIM_MILLIS,
         start_id="0-0",
-        count=BATCH,
+        count=CONSUMER_BATCH,
     )
 
     if messages:
-        print(f"[{CONSUMER}] reclaimed {len(messages)} stale messages, next={next_id}")
-        await process_messages(r, [(STREAM_IN, messages)], "STALE")
+        print(
+            f"[{CONSUMER_NAME}] Reclaimed {len(messages)} stale messages; "
+            f"next={next_id}."
+        )
+        await process_messages(redis_client, [(STREAM_IN, messages)], "STALE")
 
     return len(messages)
 
 
 async def main():
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    print(f"Worker {CONSUMER} activo en group={GROUP}, stream={STREAM_IN}")
+    redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+    print(
+        f"Worker ready: consumer={CONSUMER_NAME}, group={CONSUMER_GROUP}, "
+        f"stream={STREAM_IN}."
+    )
 
-    await ensure_group(r)
-    heartbeat_task = asyncio.create_task(heartbeat(r))
+    await ensure_consumer_group(redis_client)
+    heartbeat_task = asyncio.create_task(heartbeat(redis_client))
     last_reclaim_at = 0.0
 
     try:
@@ -116,33 +137,33 @@ async def main():
                 now = time.time()
                 if now - last_reclaim_at >= RECLAIM_INTERVAL:
                     last_reclaim_at = now
-                    if await reclaim_stale_messages(r):
+                    if await reclaim_stale_messages(redis_client):
                         continue
 
-                messages = await r.xreadgroup(
-                    GROUP,
-                    CONSUMER,
+                messages = await redis_client.xreadgroup(
+                    CONSUMER_GROUP,
+                    CONSUMER_NAME,
                     {STREAM_IN: ">"},
-                    count=BATCH,
+                    count=CONSUMER_BATCH,
                     block=5000,
                 )
 
                 if messages:
-                    await process_messages(r, messages, "NEW")
+                    await process_messages(redis_client, messages, "NEW")
                 else:
                     await asyncio.sleep(SLEEP_EMPTY)
 
             except ResponseError as error:
                 if "NOGROUP" in str(error):
-                    await ensure_group(r)
+                    await ensure_consumer_group(redis_client)
                     continue
                 raise
             except Exception as error:
-                print(f"[{CONSUMER}] read loop error: {error}")
+                print(f"[{CONSUMER_NAME}] Read loop error: {error}")
                 await asyncio.sleep(SLEEP_EMPTY)
     finally:
         heartbeat_task.cancel()
-        await r.aclose()
+        await redis_client.aclose()
 
 
 if __name__ == "__main__":

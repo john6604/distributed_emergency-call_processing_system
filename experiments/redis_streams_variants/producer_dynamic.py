@@ -1,4 +1,3 @@
-# producer_dynamic.py
 import asyncio
 import json
 import os
@@ -13,28 +12,28 @@ STREAM_IN = os.getenv("DYNAMIC_STREAM_IN") or os.getenv("STREAM_IN", "stream:con
 
 
 async def main():
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    msgs = 0
+    redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+    message_count = 0
 
     try:
-        with open(JSONL_PATH, "r", encoding="utf-8") as f:
-            for line in f:
+        with open(JSONL_PATH, "r", encoding="utf-8") as input_file:
+            for line in input_file:
                 if not line.strip():
                     continue
 
-                obj = json.loads(line)
-                await r.xadd(
+                record = json.loads(line)
+                await redis_client.xadd(
                     STREAM_IN,
                     {
-                        "id": str(obj["id"]),
-                        "text": obj["text"],
+                        "id": str(record["id"]),
+                        "text": record["text"],
                     },
                 )
-                msgs += 1
+                message_count += 1
 
-        print(f"Enviados {msgs} mensajes a {STREAM_IN}")
+        print(f"Sent {message_count} messages to {STREAM_IN}.")
     finally:
-        await r.aclose()
+        await redis_client.aclose()
 
 
 if __name__ == "__main__":

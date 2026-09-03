@@ -27,6 +27,7 @@ class PipelineStateError(RuntimeError):
 
 
 def load_dataset(path=JSONL_PATH):
+    """Load ordered tasks and fingerprint the dataset's exact bytes."""
     content = path.read_bytes()
     fingerprint = hashlib.sha256(content).hexdigest()
     tasks = []
@@ -116,6 +117,8 @@ async def initialize_batch(r, tasks, fingerprint):
             + "."
         )
 
+    # HSETNX allows one producer to initialize while concurrent producers validate
+    # and resume the batch selected by the winner.
     claimed = await r.hsetnx(
         PIPELINE_METADATA_KEY,
         "status",

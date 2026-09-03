@@ -25,7 +25,9 @@ def extract_keywords_from_model(
     use_batch_decode=False,
 ):
     prompt = KEYWORD_PROMPT_PREFIX + text
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_length).to(device)
+    inputs = tokenizer(
+        prompt, return_tensors="pt", truncation=True, max_length=max_length
+    ).to(device)
 
     generate_kwargs = {
         "num_beams": num_beams,
