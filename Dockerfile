@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm AS base
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
@@ -15,5 +15,15 @@ COPY src ./src
 
 RUN python -m pip install --index-url "${TORCH_INDEX_URL}" "torch>=2.5,<3" \
     && python -m pip install .
+
+FROM base AS test
+
+RUN python -m pip install ".[dev]"
+
+COPY tests ./tests
+
+CMD ["python", "-m", "pytest"]
+
+FROM base AS runtime
 
 CMD ["python", "-m", "emergency_processing.redis_pipeline.worker"]

@@ -14,5 +14,16 @@ dependencies = [
     "transformers>=4.57,<5",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "redis: requires a real Redis server configured through TEST_REDIS_URL",
+]

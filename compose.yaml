@@ -77,5 +77,33 @@ services:
         condition: service_healthy
     restart: "no"
 
+  test-redis:
+    image: redis:7.4-alpine
+    profiles: ["test"]
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /data
+    restart: "no"
+
+  tests:
+    image: distributed-emergency-call-processing:test
+    build:
+      context: .
+      target: test
+    environment:
+      EMERGENCY_PROCESSING_ROOT: /app
+      REDIS_URL: redis://test-redis:6379/15
+      TEST_REDIS_URL: redis://test-redis:6379/15
+    depends_on:
+      test-redis:
+        condition: service_healthy
+    profiles: ["test"]
+    restart: "no"
+
 volumes:
   huggingface_cache:
