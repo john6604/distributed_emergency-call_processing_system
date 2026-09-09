@@ -19,7 +19,7 @@ STREAM_IN = os.getenv("STREAM_IN", "stream:convs")
 STREAM_OUT = os.getenv("STREAM_OUT", "stream:results")
 WORKERS_SET = os.getenv("WORKERS_SET", "workers:active")
 PIPELINE_METADATA_KEY = pipeline_metadata_key()
-JSONL_PATH = env_path("JSONL_PATH", "data/conversaciones1.jsonl")
+JSONL_PATH = env_path("JSONL_PATH", "data/sample_calls_en.jsonl")
 
 
 class PipelineStateError(RuntimeError):

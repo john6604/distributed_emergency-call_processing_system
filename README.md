@@ -98,7 +98,7 @@ These measures were obtained using the host CPU and represent the tested environ
 
 ## Repository Structure
 
-`
+```text
 src/emergency_processing/
 ├── redis_pipeline/
 ├── keyword_extraction.py
@@ -113,7 +113,7 @@ tests/
 data/
 docs/
 outputs/
-`
+```
 
 The `experiments` directory represents early architectures and the `data` contains a `jsonl` file, which is a synthetic dataset generated to keep the application fully functional.
 

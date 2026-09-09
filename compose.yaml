@@ -27,7 +27,7 @@ services:
     environment:
       <<: *application-environment
       DISPATCHER_REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/${REDIS_DB:-0}
-      JSONL_PATH: data/conversaciones1.jsonl
+      JSONL_PATH: data/sample_calls_en.jsonl
     depends_on:
       redis:
         condition: service_healthy

@@ -8,7 +8,7 @@ import aiohttp
 
 from emergency_processing.config import env_int, env_list, env_path
 
-JSONL_PATH = env_path("JSONL_PATH", "data/conversaciones1.jsonl")
+JSONL_PATH = env_path("JSONL_PATH", "data/sample_calls_en.jsonl")
 OUTPUT_JSON = env_path("OUTPUT_JSON", "outputs/centralized_http_results.json")
 PROGRESS_FILE = env_path("PROGRESS_FILE", "outputs/centralized_http_progress.json")
 

@@ -7,7 +7,7 @@ from redis import asyncio as aioredis
 from emergency_processing.config import env_path, require_env
 
 REDIS_URL = os.getenv("DYNAMIC_REDIS_URL") or require_env("REDIS_URL")
-JSONL_PATH = env_path("JSONL_PATH", "data/conversaciones1.jsonl")
+JSONL_PATH = env_path("JSONL_PATH", "data/sample_calls_en.jsonl")
 STREAM_IN = os.getenv("DYNAMIC_STREAM_IN") or os.getenv("STREAM_IN", "stream:convs")
 
 
