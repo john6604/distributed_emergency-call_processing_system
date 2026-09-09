@@ -1,5 +1,9 @@
 # Distributed Emergency Call Processing System
 
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat\&logo=python\&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 A distributed emergency-call processing system that extracts keywords from transcripts of a dataset. Its pipeline uses Redis Streams and consumer groups to enqueue NLP inference that are processed by independent workers, with pending-task reclamation and restart-safe result collection.
 
 ---
