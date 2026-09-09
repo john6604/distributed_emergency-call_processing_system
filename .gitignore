@@ -64,3 +64,6 @@ outputs/*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Dataset
+/data/conversaciones1.jsonl
