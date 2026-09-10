@@ -23,6 +23,8 @@ A distributed emergency-call processing system that extracts keywords from trans
 
 ## Architecture Overview
 
+![Architecture](/assets/DistributedArchitecture.png)
+
 - **Producer:** Validates the dataset, fingerprints it using SHA-256 and initializes tasks.
 - **Redis:** Stores task and result streams. Manages the consumer group delivery state.
 - **Workers:** Receive tasks and process them, using BART inference. Delivers ACK states when a task is completed.
